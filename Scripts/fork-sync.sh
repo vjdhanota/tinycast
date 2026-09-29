@@ -40,7 +40,7 @@ mkdir -p build
 
 echo "▸ Building"
 xcodebuild -quiet -project Tinycast.xcodeproj -scheme Tinycast -configuration Release \
-    -derivedDataPath build/DerivedData \
+    -derivedDataPath build/DerivedData MARKETING_VERSION="${latest#v}" \
     CODE_SIGN_STYLE=Manual CODE_SIGN_IDENTITY="$IDENTITY" OTHER_CODE_SIGN_FLAGS="--timestamp=none" \
     build
 
