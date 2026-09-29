@@ -389,6 +389,7 @@ final class AppCore {
     }
 
     func handleOpenURL(_ url: URL) {
+        if handleBuiltInDeepLink(url) { return }
         switch ExtensionOAuthSession.handleCallbackURL(url) {
         case .delivered:
             paletteCoordinator.showPalette(mode: .extensionCommand, restoreAnyMode: true)

@@ -265,7 +265,7 @@ final class HotKeyManager {
         doubleTapMonitor.update(bound: Set(doubleTaps.keys))
     }
 
-    private func perform(_ action: HotKeyAction) {
+    func perform(_ action: HotKeyAction) {
         // The category switch, the way each feature switch already guards its own funnel.
         guard allowsAction?(action) ?? true else { return }
         switch action {
