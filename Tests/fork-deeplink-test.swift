@@ -47,6 +47,13 @@ struct ForkDeepLinkTest {
             "a quicklink by id",
             parse("tinycast://quicklink/\(id.uuidString)") == .action(.quicklink(id: id)))
         check(
+            "a custom window size by id",
+            parse("tinycast://window-size/\(id.uuidString)") == .action(.customWindowSize(id: id)))
+        check(
+            "a custom window size by name",
+            parse("tinycast://window-size/top-center-two-thirds")
+                == .named(.windowSize, "top-center-two-thirds"))
+        check(
             "a custom Quick Action by name",
             parse("tinycast://quick-action/Explain%20Code") == .named(.quickAction, "explain-code"))
         check(

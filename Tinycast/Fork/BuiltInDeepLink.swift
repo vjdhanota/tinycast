@@ -5,6 +5,7 @@ enum BuiltInDeepLink: Equatable, Sendable {
         case quickAction
         case customCommand
         case quicklink
+        case windowSize
     }
 
     case action(HotKeyAction)
@@ -50,6 +51,8 @@ enum BuiltInDeepLink: Equatable, Sendable {
             return item(target, in: .customCommand) { .customCommand(id: $0) }
         case "quicklink":
             return item(target, in: .quicklink) { .quicklink(id: $0) }
+        case "window-size":
+            return item(target, in: .windowSize) { .customWindowSize(id: $0) }
         default:
             return nil
         }

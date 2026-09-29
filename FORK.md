@@ -13,6 +13,7 @@ Leader Key can trigger them. Branch `fork` carries the patch; `main` mirrors ups
 | `tinycast://quick-action/<name-or-uuid>` | A custom Quick Action, e.g. `quick-action/explain-code` |
 | `tinycast://custom-command/<name-or-uuid>` | A custom command |
 | `tinycast://quicklink/<name-or-uuid>` | A quicklink |
+| `tinycast://window-size/<name-or-uuid>` | A custom window size, e.g. `window-size/top-center-two-thirds` |
 
 Names match case-insensitively with punctuation and spaces as hyphens. Each link runs exactly what the
 action's global shortcut runs, so the feature must be switched on in Settings.

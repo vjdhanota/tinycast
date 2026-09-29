@@ -25,6 +25,8 @@ extension AppCore {
             return customCommands.commands.first { matches($0.name) }.map { .customCommand(id: $0.id) }
         case .quicklink:
             return quicklinks.quicklinks.first { matches($0.name) }.map { .quicklink(id: $0.id) }
+        case .windowSize:
+            return customWindowSizes.sizes.first { matches($0.name) }.map { .customWindowSize(id: $0.id) }
         }
     }
 }
