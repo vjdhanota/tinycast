@@ -16,6 +16,8 @@ swiftc -swift-version 6 -Onone \
     Tinycast/Features/Quicklinks/Model/QuicklinkDestination.swift \
     Tinycast/Features/SystemActions/Model/SystemAction.swift \
     Tinycast/Features/WindowManagement/Model/WindowCommand.swift \
+    Tinycast/Features/Extensions/Model/ExtensionDeepLink.swift \
+    Tinycast/Features/Extensions/Model/ExtensionLaunchType.swift \
     Tests/fork-deeplink-test.swift \
     -o "$BIN/fork-deeplink-test"
 "$BIN/fork-deeplink-test"

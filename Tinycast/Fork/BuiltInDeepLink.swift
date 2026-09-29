@@ -16,10 +16,33 @@ enum BuiltInDeepLink: Equatable, Sendable {
         case "tinycast":
             return parseTinycast(segments(of: url))
         case "raycast", "com.raycast":
-            return parseRaycast(segments(of: url)).map { .action($0) }
+            return parseRaycast(segments(of: url))
         default:
             return nil
         }
+    }
+
+    static func url(for action: HotKeyAction) -> String? {
+        let path: String
+        switch action {
+        case .command(let id):
+            guard id.hotKeyAction != nil else { return nil }
+            path = id.rawValue.replacingOccurrences(of: ":", with: "/")
+        case .windowCommand(let id): path = "window-command/" + id.rawValue
+        case .systemAction(let id): path = "system-action/" + id.rawValue
+        case .quickAction(let id): path = "quick-action/" + id.uuidString.lowercased()
+        case .customCommand(let id): path = "custom-command/" + id.uuidString.lowercased()
+        case .quicklink(let id): path = "quicklink/" + id.uuidString.lowercased()
+        case .customWindowSize(let id): path = "window-size/" + id.uuidString.lowercased()
+        default:
+            return nil
+        }
+        return "tinycast://" + path
+    }
+
+    static func extensionURL(author: String, extensionName: String, commandName: String) -> String {
+        let owner = extensionName.contains("/") ? [] : [author]
+        return "tinycast://" + (["extensions"] + owner + [extensionName, commandName]).joined(separator: "/")
     }
 
     static func slug(_ name: String) -> String {
@@ -73,18 +96,33 @@ enum BuiltInDeepLink: Equatable, Sendable {
         "calendar/my-schedule": .mySchedule,
     ]
 
-    private static func parseRaycast(_ segments: [String]) -> HotKeyAction? {
+    private static let raycastAICommands: [String: CommandID] = [
+        "improve-writing": .rewrite,
+        "fix-spelling-and-grammar": .fixGrammar,
+        "summarize": .summarize,
+        "ai-chat": .aiChat,
+    ]
+
+    private static func parseRaycast(_ segments: [String]) -> BuiltInDeepLink? {
+        if segments.count == 2, segments[0] == "ai-commands" { return aiCommand(segments[1]) }
         guard segments.count == 4, segments[0] == "extensions", segments[1] == "raycast" else {
             return nil
         }
         let (extensionName, command) = (segments[2], segments[3])
         switch extensionName {
         case "window-management":
-            return WindowCommand.ID(rawValue: command).map { .windowCommand(id: $0) }
+            return WindowCommand.ID(rawValue: command).map { .action(.windowCommand(id: $0)) }
         case "system":
-            return SystemAction.ID(rawValue: command).map { .systemAction(id: $0) }
+            return SystemAction.ID(rawValue: command).map { .action(.systemAction(id: $0)) }
+        case "ai":
+            return aiCommand(command)
         default:
-            return raycastCommands[extensionName + "/" + command]?.hotKeyAction
+            return raycastCommands[extensionName + "/" + command]?.hotKeyAction.map { .action($0) }
         }
+    }
+
+    private static func aiCommand(_ name: String) -> BuiltInDeepLink? {
+        guard let command = raycastAICommands[name] else { return .named(.quickAction, slug(name)) }
+        return command.hotKeyAction.map { .action($0) }
     }
 }

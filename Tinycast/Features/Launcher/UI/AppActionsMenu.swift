@@ -125,6 +125,7 @@ enum AppActionsMenu {
                     core.extensionCoordinator.confirmUninstall(app)
                 })
         }
+        items += copyDeeplinkItems(app: app, core: core)
         return PopoverMenuContent(header: app.name, items: items)
     }
 }

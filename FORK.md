@@ -18,9 +18,15 @@ Leader Key can trigger them. Branch `fork` carries the patch; `main` mirrors ups
 Names match case-insensitively with punctuation and spaces as hyphens. Each link runs exactly what the
 action's global shortcut runs, so the feature must be switched on in Settings.
 
+**Copy Deeplink** in a launcher row's ⌘K menu copies its link: built-in commands, window commands,
+system actions, custom Quick Actions, custom commands, quicklinks, custom sizes and extension
+commands. Custom items are copied by id, so renaming one never breaks a link.
+
 When Tinycast owns `raycast://`, Raycast's built-in links for window management, system actions,
 clipboard history, emoji, camera, menu search, notes and schedule run their Tinycast equivalents.
-`raycast://ai-commands/*` and Raycast store extensions are left to upstream's handling.
+Raycast AI links do too: `improve-writing` runs Rewrite, `fix-spelling-and-grammar` Fix Grammar,
+`summarize` Summarize and `ai-chat` AI Chat; any other `raycast://ai-commands/<slug>` runs the custom
+Quick Action whose name matches the slug. Raycast store extensions are left to upstream's handling.
 
 ## Staying current
 
@@ -33,8 +39,9 @@ Needs Xcode 26, `brew install xcodegen`, and the `Tinycast Self-Signed` identity
 Conflicts stop the script; resolve, commit, rerun with `--rebuild`. `git rerere` remembers the
 resolution for next time. While Raycast is installed the script hands `raycast://` back to it.
 
-The patch touches upstream in three lines: `handleOpenURL` calls `handleBuiltInDeepLink` first,
-`HotKeyManager.perform` is not private, and `ReleaseFeed.repository` names this fork so the in-app
+The patch touches upstream in four lines: `handleOpenURL` calls `handleBuiltInDeepLink` first,
+`HotKeyManager.perform` is not private, `AppActionsMenu` appends `copyDeeplinkItems`, and
+`ReleaseFeed.repository` names this fork so the in-app
 updater never offers upstream builds this signature cannot replace. Everything else lives in
 `Tinycast/Fork/`, `Scripts/fork-*` and `Tests/fork-*`. `Tinycast.xcodeproj` is regenerated at build
 time and never committed here.

@@ -110,9 +110,60 @@ struct ForkDeepLinkTest {
             "Raycast store extensions stay with the extension runner",
             parse("raycast://extensions/raycast/github/my-pull-requests") == nil)
         check(
-            "Raycast AI commands are left alone",
-            parse("raycast://ai-commands/improve-writing") == nil)
+            "Raycast Improve Writing",
+            parse("raycast://ai-commands/improve-writing") == .action(.command(.rewrite)))
+        check(
+            "Raycast Fix Spelling and Grammar",
+            parse("raycast://ai-commands/fix-spelling-and-grammar") == .action(.command(.fixGrammar)))
+        check(
+            "Raycast Summarize",
+            parse("raycast://ai-commands/summarize") == .action(.command(.summarize)))
+        check(
+            "another Raycast AI command resolves to a Quick Action of the same name",
+            parse("raycast://ai-commands/explain-code-step-by-step")
+                == .named(.quickAction, "explain-code-step-by-step"))
+        check(
+            "the Raycast AI extension's Improve Writing",
+            parse("raycast://extensions/raycast/ai/improve-writing") == .action(.command(.rewrite)))
+        check(
+            "Raycast AI Chat",
+            parse("raycast://extensions/raycast/ai/ai-chat") == .action(.command(.aiChat)))
+        check("a bare ai-commands link", parse("raycast://ai-commands") == nil)
         check("Raycast confetti", parse("raycast://confetti") == nil)
+
+        let roundTrips: [HotKeyAction] = [
+            .command(.clipboardHistory), .command(.fixGrammar), .windowCommand(id: .topLeftQuarter),
+            .systemAction(id: .sleep), .quickAction(id: id), .customCommand(id: id), .quicklink(id: id),
+            .customWindowSize(id: id),
+        ]
+        for action in roundTrips {
+            let url = BuiltInDeepLink.url(for: action)
+            check(
+                "\(action) round-trips through its deeplink",
+                url.flatMap { URL(string: $0) }.flatMap(BuiltInDeepLink.parse) == .action(action))
+        }
+        check(
+            "a command's deeplink uses its catalog id",
+            BuiltInDeepLink.url(for: .command(.clipboardHistory)) == "tinycast://command/clipboard-history")
+        check(
+            "a custom item's deeplink uses its lowercased id",
+            BuiltInDeepLink.url(for: .quickAction(id: id))
+                == "tinycast://quick-action/\(id.uuidString.lowercased())")
+        check("an app has no deeplink", BuiltInDeepLink.url(for: .app(bundleID: "com.apple.Notes")) == nil)
+        check("the palette toggle has no deeplink", BuiltInDeepLink.url(for: .togglePalette) == nil)
+
+        let extensionURL = BuiltInDeepLink.extensionURL(
+            author: "raycast", extensionName: "github", commandName: "my-issues")
+        check("an extension command's deeplink", extensionURL == "tinycast://extensions/raycast/github/my-issues")
+        let extensionLink = ExtensionDeepLink.parse(url: URL(string: extensionURL)!)
+        check(
+            "an extension deeplink parses back to its command",
+            extensionLink?.extensionName == "github" && extensionLink?.commandName == "my-issues"
+                && extensionLink?.matches(manifestName: "github") == true)
+        check(
+            "a scoped extension name keeps its owner",
+            BuiltInDeepLink.extensionURL(author: "someone", extensionName: "team/tool", commandName: "run")
+                == "tinycast://extensions/team/tool/run")
 
         check("a slug lowercases and hyphenates", BuiltInDeepLink.slug("Explain  Code!") == "explain-code")
         check("a slug trims separators", BuiltInDeepLink.slug(" -Fix/Grammar- ") == "fix-grammar")
