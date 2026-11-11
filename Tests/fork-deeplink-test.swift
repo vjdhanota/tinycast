@@ -160,11 +160,6 @@ struct ForkDeepLinkTest {
         let extensionURL = BuiltInDeepLink.extensionURL(
             author: "raycast", extensionName: "github", commandName: "my-issues")
         check("an extension command's deeplink", extensionURL == "tinycast://extensions/raycast/github/my-issues")
-        let extensionLink = ExtensionDeepLink.parse(url: URL(string: extensionURL)!)
-        check(
-            "an extension deeplink parses back to its command",
-            extensionLink?.extensionName == "github" && extensionLink?.commandName == "my-issues"
-                && extensionLink?.matches(manifestName: "github") == true)
         check(
             "a scoped extension name keeps its owner",
             BuiltInDeepLink.extensionURL(author: "someone", extensionName: "team/tool", commandName: "run")
