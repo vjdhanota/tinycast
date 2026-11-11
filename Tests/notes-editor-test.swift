@@ -12,7 +12,11 @@ struct NotesEditorTests {
         _ = NSApplication.shared
         testLiteralEditingAndNativeCommands(rendersMarkdown: false)
         testLiteralEditingAndNativeCommands(rendersMarkdown: true)
-        testUndoIsolation()
+        testUndoAndRedoShortcuts(rendersMarkdown: false)
+        testUndoAndRedoShortcuts(rendersMarkdown: true)
+        testUndoIsolation(afterUndo: false)
+        testUndoIsolation(afterUndo: true)
+        testQuickActionReplacement()
         testCharacterCountReports()
         testRenderingKeepsSourceAndUndo()
         testHiddenMarkersAndReveal()
@@ -20,13 +24,125 @@ struct NotesEditorTests {
         testRenderingOffIsLiteral()
         testTaskSpacing()
         testBlockDecorationsAndFragments()
+        testListMarkersWaitForSpace()
         testListKeysAndChords()
         testFormattingReports()
         testTaskRuleCheckboxesAndLinks()
         testTasks()
         testTaskEdits()
+        testMarkersFollowAWrappedFirstWord()
+        testTextHeight(rendersMarkdown: false)
+        testTextHeight(rendersMarkdown: true)
+        testHeightBeforeDraw()
         print(failures == 0 ? "Notes editor tests passed" : "\(failures) tests failed")
         exit(failures == 0 ? 0 : 1)
+    }
+
+    private static func testTextHeight(rendersMarkdown: Bool) {
+        let input = NoteEditorInput(id: NoteID(rawValue: "Sizing.md"), source: "", epoch: 0)
+        let editor = makeEditor(input: input, rendersMarkdown: rendersMarkdown)
+        let emptyHeight = editor.textView.textHeight(upTo: .infinity)
+        check(
+            "an empty note measures shorter than the visible area", emptyHeight < editor.textView.frame.height
+        )
+
+        let lines = String(repeating: "A line of text\n", count: 20)
+        editor.textView.insertText(lines, replacementRange: editor.textView.selectedRange())
+        let multilineHeight = editor.textView.textHeight(upTo: .infinity)
+        check("new lines grow the measured height at once", multilineHeight > emptyHeight)
+
+        let wrappedText = String(repeating: "wrapped words ", count: 80)
+        editor.textView.insertText(wrappedText, replacementRange: editor.textView.selectedRange())
+        let wrappedHeight = editor.textView.textHeight(upTo: .infinity)
+        check("wrapped text grows the measured height without a newline", wrappedHeight > multilineHeight)
+
+        let pasteboard = NSPasteboard.withUniqueName()
+        defer { pasteboard.releaseGlobally() }
+        paste("\n" + lines, into: editor.textView, from: pasteboard)
+        check("paste grows the measured height", editor.textView.textHeight(upTo: .infinity) > wrappedHeight)
+
+        editor.textView.selectAll(nil)
+        editor.textView.deleteBackward(nil)
+        check(
+            "deleting the text shrinks the measured height back",
+            editor.textView.textHeight(upTo: .infinity) == emptyHeight)
+    }
+
+    /// The fit reads before any draw, so each height here is read right after its edit returns.
+    private static func testHeightBeforeDraw() {
+        let mixed = [
+            "# Title", "Intro", "", "## Section", "- item", "- [ ] task", "1. one", "> quote", "---", "```",
+            "let x = 1", "```", "| a | b |", "| --- | --- |", "| 1 | 2 |", "", "last"
+        ].joined(separator: "\n")
+        let notes = [
+            ("list", "Ideas:\n- First\n- Second\n- Third"), ("mixed", mixed), ("trailing newline", "a\n- b\n")
+        ]
+        for rendersMarkdown in [true, false] {
+            for (name, source) in notes {
+                checkHeightBeforeDraw(
+                    of: "\(rendersMarkdown ? "rendered" : "literal") \(name) note", source: source,
+                    rendersMarkdown: rendersMarkdown)
+            }
+        }
+
+        let long = makeEditor(
+            input: NoteEditorInput(
+                id: NoteID(rawValue: "Long.md"), source: String(repeating: "- Item\n", count: 60), epoch: 0),
+            rendersMarkdown: true)
+        let limit = Theme.Size.noteWindowMaxHeight
+        let measured = long.textView.textHeight(upTo: limit)
+        check("a note taller than the window still measures past its limit", measured >= limit)
+        check(
+            "measuring stops near the limit instead of laying out the rest",
+            measured < laidOutHeight(of: long.textView))
+    }
+
+    private static func checkHeightBeforeDraw(of note: String, source: String, rendersMarkdown: Bool) {
+        let editor = makeEditor(
+            input: NoteEditorInput(id: NoteID(rawValue: "Heights.md"), source: source, epoch: 0),
+            rendersMarkdown: rendersMarkdown)
+        let textView = editor.textView
+        let length = { (textView.string as NSString).length }
+        func edit(_ name: String, at location: Int? = nil, _ change: () -> Void) {
+            if let location { textView.setSelectedRange(NSRange(location: location, length: 0)) }
+            change()
+            let measured = textView.textHeight(upTo: Theme.Size.noteWindowMaxHeight)
+            check(
+                "\(name) in a \(note) measures its height before a draw",
+                measured == laidOutHeight(of: textView))
+        }
+        edit("typing at the end", at: length()) {
+            textView.insertText("x", replacementRange: textView.selectedRange())
+        }
+        edit("Return at the end") { textView.insertNewline(nil) }
+        edit("Return in the middle", at: length() / 2) { textView.insertNewline(nil) }
+        edit("typing in the middle") { textView.insertText("y", replacementRange: textView.selectedRange()) }
+        edit("Delete in the middle") { textView.deleteBackward(nil) }
+        edit("Delete at a line's start") { textView.deleteBackward(nil) }
+        edit("a second Delete there") { textView.deleteBackward(nil) }
+        edit("Return at the start", at: 0) { textView.insertNewline(nil) }
+        edit("undo") { editor.coordinator.editorUndoManager.undo() }
+        edit("switching notes") {
+            editor.coordinator.update(
+                NoteEditorInput(id: NoteID(rawValue: "Other.md"), source: source, epoch: 0))
+        }
+        edit("deleting everything") {
+            textView.selectAll(nil)
+            textView.deleteBackward(nil)
+        }
+        withExtendedLifetime(editor) {}
+    }
+
+    /// Where the last line sits once the whole note is laid out, as a draw would leave it.
+    private static func laidOutHeight(of textView: NSTextView) -> CGFloat {
+        guard let manager = textView.textLayoutManager else { return -1 }
+        manager.ensureLayout(for: manager.documentRange)
+        var bottom: CGFloat = 0
+        manager.enumerateTextLayoutFragments(from: manager.documentRange.endLocation, options: [.reverse]) {
+            bottom = $0.layoutFragmentFrame.maxY
+            return false
+        }
+        return bottom + textView.textContainerInset.height * 2
     }
 
     private static func testLiteralEditingAndNativeCommands(rendersMarkdown: Bool) {
@@ -42,7 +158,12 @@ struct NotesEditorTests {
         defer { pasteboard.releaseGlobally() }
 
         check("the editor displays literal Markdown source", editor.textView.string == source)
-        check("the plain editor enables native Find", editor.textView.usesFindPanel)
+        check("the plain editor enables native Find", editor.textView.usesFindBar)
+        editor.textView.find(.showFindInterface)
+        check("Find opens in the editor", editor.textView.enclosingScrollView?.isFindBarVisible == true)
+        editor.textView.find(.hideFindInterface)
+        check("Find closes in the editor", editor.textView.enclosingScrollView?.isFindBarVisible == false)
+        check("Find closes without changing the source", editor.textView.string == source)
 
         let boldRange = (editor.textView.string as NSString).range(of: "**bold**")
         editor.textView.setSelectedRange(boldRange)
@@ -79,7 +200,92 @@ struct NotesEditorTests {
         check("every published value equals the displayed source", changes.last == editor.textView.string)
     }
 
-    private static func testUndoIsolation() {
+    private static func testQuickActionReplacement() {
+        let source = "The cat are here."
+        let input = NoteEditorInput(id: NoteID(rawValue: "Action.md"), source: source, epoch: 1)
+        var changes: [String] = []
+        let editor = makeEditor(input: input, onSourceChange: { changes.append($0) })
+        let range = (source as NSString).range(of: "cat are")
+        editor.textView.setSelectedRange(range)
+        check("Quick Actions read the note selection", editor.textView.injectableSelection == "cat are")
+        check(
+            "Quick Actions replace an unchanged note selection",
+            editor.textView.replaceUnchangedSelection(
+                with: "cats are", source: source, range: range))
+        check(
+            "replacement updates the note through the editor",
+            editor.textView.string == "The cats are here." && changes.last == editor.textView.string)
+        editor.coordinator.editorUndoManager.undo()
+        check("the replacement is undoable", editor.textView.string == source)
+
+        editor.textView.setSelectedRange(NSRange(location: 0, length: 3))
+        check(
+            "a moved selection is not replaced",
+            !editor.textView.replaceUnchangedSelection(with: "wrong", source: source, range: range))
+        editor.textView.insertText("!", replacementRange: NSRange(location: 0, length: 0))
+        editor.textView.setSelectedRange(range)
+        check(
+            "a changed note is not replaced",
+            !editor.textView.replaceUnchangedSelection(with: "wrong", source: source, range: range))
+    }
+
+    private static func testUndoAndRedoShortcuts(rendersMarkdown: Bool) {
+        let source = "# Heading\n🧑🏽‍💻e\u{301}"
+        let input = NoteEditorInput(id: NoteID(rawValue: "Undo.md"), source: source, epoch: 1)
+        var changes: [String] = []
+        var counts: [Int] = []
+        let editor = makeEditor(
+            input: input, rendersMarkdown: rendersMarkdown,
+            onSourceChange: { changes.append($0) }, onCountChange: { _, count in counts.append(count) })
+        let undo = keyDown("z", keyCode: kVK_ANSI_Z, in: editor.window)
+        let redo = keyDown("Z", keyCode: kVK_ANSI_Z, modifiers: [.command, .shift], in: editor.window)
+        editor.textView.setSelectedRange(NSRange(location: (source as NSString).length, length: 0))
+        editor.textView.insertText(" edit", replacementRange: editor.textView.selectedRange())
+        check("⌘Z reaches the editor through its window", editor.window.performKeyEquivalent(with: undo))
+        check("⌘Z restores exact source", editor.textView.string == source)
+        check("Undo publishes the restored source for autosave", changes == [source + " edit", source])
+        check("Undo updates the character count", counts.last == (source as NSString).length)
+        check("⌘⇧Z reaches the editor through its window", editor.window.performKeyEquivalent(with: redo))
+        check("⌘⇧Z restores the edit", editor.textView.string == source + " edit")
+        check("Redo publishes the restored edit for autosave", changes.last == source + " edit")
+        check("Redo updates the character count", counts.last == ((source + " edit") as NSString).length)
+
+        editor.coordinator.editorUndoManager.undo()
+        check("native Undo also publishes the source", changes.last == source)
+        editor.coordinator.editorUndoManager.redo()
+        check("native Redo also publishes the source", changes.last == source + " edit")
+        _ = editor.window.performKeyEquivalent(with: undo)
+        editor.textView.insertText(" new", replacementRange: editor.textView.selectedRange())
+        check("an edit after Undo discards Redo", !editor.coordinator.editorUndoManager.canRedo)
+        let updated = editor.textView.string
+        let changeCount = changes.count
+        let repeatedUndo = keyDown("z", keyCode: kVK_ANSI_Z, isARepeat: true, in: editor.window)
+        check("a held Undo shortcut is consumed", editor.window.performKeyEquivalent(with: repeatedUndo))
+        check("a held Undo shortcut does not repeat", editor.textView.string == updated)
+        for modifiers: NSEvent.ModifierFlags in [[.command, .option], [.command, .control]] {
+            let event = keyDown("z", keyCode: kVK_ANSI_Z, modifiers: modifiers, in: editor.window)
+            check("other Z chords leave history alone", !editor.textView.performKeyEquivalent(with: event))
+        }
+        editor.window.makeFirstResponder(nil)
+        check("an unfocused editor does not claim Undo", !editor.textView.performKeyEquivalent(with: undo))
+        check(
+            "unrelated shortcuts change nothing",
+            editor.textView.string == updated && changes.count == changeCount)
+        editor.window.makeFirstResponder(editor.textView)
+        check("empty Redo is handled locally", editor.window.performKeyEquivalent(with: redo))
+        check("empty Redo changes nothing", editor.textView.string == updated && changes.count == changeCount)
+
+        editor.coordinator.update(NoteEditorInput(id: input.id, source: updated, epoch: input.epoch))
+        check("a source echo preserves Undo", editor.coordinator.editorUndoManager.canUndo)
+        _ = editor.window.performKeyEquivalent(with: undo)
+        check("Undo after a source echo still restores the note", editor.textView.string == source)
+        check("Undo after a source echo still publishes the note", changes.last == source)
+        let restoredChangeCount = changes.count
+        check("empty Undo is handled locally", editor.window.performKeyEquivalent(with: undo))
+        check("empty Undo publishes nothing", changes.count == restoredChangeCount)
+    }
+
+    private static func testUndoIsolation(afterUndo: Bool) {
         let first = NoteEditorInput(
             id: NoteID(rawValue: "First.md"),
             source: "First",
@@ -89,6 +295,10 @@ struct NotesEditorTests {
         editor.textView.setSelectedRange(NSRange(location: 5, length: 0))
         editor.textView.insertText(" edit", replacementRange: editor.textView.selectedRange())
         check("native editing registers Undo", editor.coordinator.editorUndoManager.canUndo)
+        if afterUndo {
+            editor.coordinator.editorUndoManager.undo()
+            check("native Undo registers Redo", editor.coordinator.editorUndoManager.canRedo)
+        }
 
         let second = NoteEditorInput(
             id: NoteID(rawValue: "Second.md"),
@@ -98,7 +308,9 @@ struct NotesEditorTests {
         editor.coordinator.update(second)
         check("switching notes installs the replacement source", editor.textView.string == "Second")
         check("switching notes clears stale Undo", !editor.coordinator.editorUndoManager.canUndo)
+        check("switching notes clears stale Redo", !editor.coordinator.editorUndoManager.canRedo)
         editor.coordinator.editorUndoManager.undo()
+        editor.coordinator.editorUndoManager.redo()
         check("Undo after a switch leaves the new note intact", editor.textView.string == "Second")
 
         editor.textView.setSelectedRange(NSRange(location: 6, length: 0))
@@ -108,6 +320,7 @@ struct NotesEditorTests {
         editor.coordinator.update(external)
         check("a clean external reload replaces the displayed source", editor.textView.string == "External")
         check("a clean external reload clears stale Undo", !editor.coordinator.editorUndoManager.canUndo)
+        check("a clean external reload clears stale Redo", !editor.coordinator.editorUndoManager.canRedo)
     }
 
     private static func testCharacterCountReports() {
@@ -294,7 +507,7 @@ struct NotesEditorTests {
         let second = text.range(of: "- [x] second").location
         if let top = fragments[0], let bottom = fragments[second] {
             let box = { (fragment: NSTextLayoutFragment) -> CGRect in
-                let line = fragment.textLineFragments.first?.typographicBounds ?? .zero
+                let line = (fragment as? NoteBlockLayoutFragment)?.firstLine ?? .zero
                 return NoteCheckboxGeometry.rect(
                     level: 0, firstLineHeight: line.height,
                     bodyPointSize: NoteMarkdownTypography.body.pointSize
@@ -316,8 +529,28 @@ struct NotesEditorTests {
         check(
             "bullets and numbered items get the same spacing as tasks",
             [0, 6, 12].allSatisfy { style(at: $0)?.paragraphSpacing == Theme.Spacing.md })
+        let emptyBullet = "- first\n- \n- third"
         editor.coordinator.update(
-            NoteEditorInput(id: NoteID(rawValue: "Spacing.md"), source: source, epoch: 3))
+            NoteEditorInput(id: NoteID(rawValue: "EmptyBullet.md"), source: emptyBullet, epoch: 3))
+        editor.textView.setSelectedRange(NSRange(location: 14, length: 0))
+        let bulletFragments = layoutFragments(in: editor.textView)
+        check(
+            "an empty bullet keeps the filled bullet's line height",
+            bulletFragments[8]?.textLineFragments.first?.typographicBounds.height
+                == bulletFragments[0]?.textLineFragments.first?.typographicBounds.height)
+        check(
+            "an empty bullet keeps its dot",
+            decoration(in: editor.textView, at: 8)?.shape == .bullet(level: 0))
+        check(
+            "an empty bullet keeps normal text metrics",
+            font(in: editor.textView, at: 8) == NoteMarkdownTypography.body)
+        check("an empty bullet keeps list spacing", style(at: 8)?.paragraphSpacing == Theme.Spacing.md)
+        editor.textView.setSelectedRange(NSRange(location: 10, length: 0))
+        check(
+            "an active empty bullet keeps its dot",
+            decoration(in: editor.textView, at: 8)?.shape == .bullet(level: 0))
+        editor.coordinator.update(
+            NoteEditorInput(id: NoteID(rawValue: "Spacing.md"), source: source, epoch: 4))
         editor.textView.setSelectedRange(NSRange(location: text.length, length: 0))
         check(
             "non-list paragraphs retain native spacing",
@@ -359,15 +592,29 @@ struct NotesEditorTests {
         check(
             "list markers are a neutral gray",
             decoration(in: editor.textView, at: bullet)?.fill.cgColor == gray)
+        let ordered = text.range(of: "1. first").location
+        editor.textView.setSelectedRange(NSRange(location: ordered + 4, length: 0))
+        check(
+            "a number keeps the same gray under the caret",
+            color(in: editor.textView, at: ordered)?.cgColor == gray)
+        let task = text.range(of: "- [ ] open").location
+        editor.textView.setSelectedRange(NSRange(location: task + 6, length: 0))
+        check(
+            "a task marker keeps the same gray under the caret",
+            color(in: editor.textView, at: task)?.cgColor == gray)
         let renderedIndent = paragraphStyle(in: editor.textView, at: bullet)?.headIndent
         editor.textView.setSelectedRange(NSRange(location: bullet + 3, length: 0))
-        check("a revealed list line carries none", shape("- bullet") == nil)
+        check("a bullet keeps its dot under the caret", shape("- bullet") == .bullet(level: 0))
         let revealed = paragraphStyle(in: editor.textView, at: bullet)
-        let markerWidth = ("- " as NSString).size(withAttributes: [.font: NoteMarkdownTypography.body]).width
         check(
-            "a revealed list line hangs its marker so the text stays in place",
+            "a bullet keeps its rendered indent under the caret",
             revealed?.headIndent == renderedIndent
-                && abs((revealed?.firstLineHeadIndent ?? 0) + markerWidth - (renderedIndent ?? 0)) < 0.5)
+                && revealed?.firstLineHeadIndent == renderedIndent)
+        editor.textView.setSelectedRange(NSRange(location: text.range(of: "nested").location, length: 0))
+        check(
+            "moving the caret between bullets keeps both dots",
+            shape("- bullet") == .bullet(level: 0)
+                && shape("    - nested") == .bullet(level: 1))
         editor.textView.setSelectedRange(NSRange(location: 0, length: 0))
 
         let fragments = layoutFragments(in: editor.textView)
@@ -392,7 +639,7 @@ struct NotesEditorTests {
             "consecutive code rows abut with no seam",
             fenceFrame != nil && fenceFrame?.maxY == codeFrame?.minY)
         if let task = fragment("- [ ] open") as? NoteBlockLayoutFragment {
-            let firstLine = task.textLineFragments.first?.typographicBounds ?? .zero
+            let firstLine = task.firstLine
             let box = NoteCheckboxGeometry.rect(
                 level: 0, firstLineHeight: firstLine.height,
                 bodyPointSize: NoteMarkdownTypography.body.pointSize)
@@ -401,6 +648,29 @@ struct NotesEditorTests {
         } else {
             check("the checkbox lies inside the task's drawing surface", false)
         }
+    }
+
+    private static func testListMarkersWaitForSpace() {
+        let editor = makeEditor(
+            input: NoteEditorInput(id: NoteID(rawValue: "ListMarkers.md"), source: "", epoch: 1),
+            rendersMarkdown: true)
+        editor.textView.insertText("-", replacementRange: editor.textView.selectedRange())
+        check("a lone dash stays literal", editor.coordinator.renderer.markdown.lines[0].kind == .paragraph)
+        editor.textView.insertText(" ", replacementRange: editor.textView.selectedRange())
+        check(
+            "space turns a dash into a bullet",
+            editor.coordinator.renderer.markdown.lines[0].kind == .bullet
+                && decoration(in: editor.textView, at: 0)?.shape == .bullet(level: 0))
+
+        editor.coordinator.update(NoteEditorInput(id: NoteID(rawValue: "Numbered.md"), source: "", epoch: 2))
+        editor.textView.insertText("1.", replacementRange: editor.textView.selectedRange())
+        check(
+            "a lone number marker stays literal",
+            editor.coordinator.renderer.markdown.lines[0].kind == .paragraph)
+        editor.textView.insertText(" ", replacementRange: editor.textView.selectedRange())
+        check(
+            "space turns a number marker into a list",
+            editor.coordinator.renderer.markdown.lines[0].kind == .ordered(number: 1))
     }
 
     private static func testListKeysAndChords() {
@@ -414,6 +684,9 @@ struct NotesEditorTests {
             "Return continues a list in one published edit",
             editor.textView.string == "- item\n- " && changes == ["- item\n- "]
                 && editor.textView.selectedRange() == NSRange(location: 9, length: 0))
+        check(
+            "a new empty bullet is drawn at the end of a note",
+            decoration(in: editor.textView, at: 7)?.shape == .bullet(level: 0))
         undo.undo()
         check("one Undo step removes the continuation", editor.textView.string == "- item")
         undo.redo()
@@ -669,19 +942,58 @@ struct NotesEditorTests {
     }
 
     private static func keyDown(
-        _ characters: String, keyCode: Int, modifiers: NSEvent.ModifierFlags = [.command], in window: NSWindow
+        _ characters: String, keyCode: Int, modifiers: NSEvent.ModifierFlags = [.command],
+        isARepeat: Bool = false, in window: NSWindow
     ) -> NSEvent {
         NSEvent.keyEvent(
             with: .keyDown, location: .zero, modifierFlags: modifiers, timestamp: 0,
             windowNumber: window.windowNumber, context: nil, characters: characters,
-            charactersIgnoringModifiers: characters, isARepeat: false, keyCode: UInt16(keyCode)) ?? NSEvent()
+            charactersIgnoringModifiers: characters, isARepeat: isARepeat, keyCode: UInt16(keyCode))
+            ?? NSEvent()
+    }
+
+    /// A first word too wide for the line strands the hidden marker on a hairline above it.
+    private static func testMarkersFollowAWrappedFirstWord() {
+        let word = String(repeating: "wrap", count: 40)
+        let source = "- \(word)\n- [ ] \(word)\n1. \(word)"
+        let taskStart = (source as NSString).range(of: "- [ ]").location
+        let orderedStart = (source as NSString).range(of: "1. ").location
+        var changes: [String] = []
+        let editor = makeEditor(
+            input: NoteEditorInput(id: NoteID(rawValue: "LongWords.md"), source: source, epoch: 0),
+            rendersMarkdown: true, onSourceChange: { changes.append($0) })
+        let fragments = layoutFragments(in: editor.textView)
+        guard let bullet = fragments[0] as? NoteBlockLayoutFragment,
+            let task = fragments[taskStart] as? NoteBlockLayoutFragment,
+            let ordered = fragments[orderedStart] as? NoteBlockLayoutFragment,
+            [bullet, task, ordered].allSatisfy({ $0.textLineFragments.count > 1 })
+        else { return check("long first words wrap inside their list items", false) }
+        check(
+            "a long first word leaves the hidden marker on a hairline",
+            bullet.textLineFragments[0].typographicBounds.height < 1)
+        check(
+            "the bullet lines up with the first line of text",
+            bullet.firstLine == bullet.textLineFragments[1].typographicBounds)
+        let orderedText = ordered.textLineFragments[1]
+        check(
+            "the number sits on the first line of text's baseline",
+            ordered.firstBaseline == orderedText.typographicBounds.minY + orderedText.glyphOrigin.y)
+
+        let text = task.textLineFragments[1].typographicBounds
+        let box = NoteCheckboxGeometry.rect(
+            level: 0, firstLineHeight: text.height, bodyPointSize: NoteMarkdownTypography.body.pointSize)
+        let lowerEdge = CGPoint(x: box.midX, y: task.layoutFragmentFrame.minY + text.minY + box.maxY - 1)
+        check(
+            "a checkbox under a long first word clicks where it is drawn",
+            editor.textView.toggleTask(atContainerPoint: lowerEdge))
+        check("clicking it checks that task", changes.last?.contains("- [x] ") == true)
     }
 
     private static func checkboxCenter(in textView: NSTextView, lineStart: Int) -> CGPoint? {
         guard let fragment = layoutFragments(in: textView)[lineStart] as? NoteBlockLayoutFragment else {
             return nil
         }
-        let firstLine = fragment.textLineFragments.first?.typographicBounds ?? .zero
+        let firstLine = fragment.firstLine
         let box = NoteCheckboxGeometry.rect(
             level: 0, firstLineHeight: firstLine.height, bodyPointSize: NoteMarkdownTypography.body.pointSize)
         return CGPoint(x: box.midX, y: fragment.layoutFragmentFrame.minY + firstLine.minY + box.midY)

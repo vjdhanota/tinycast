@@ -1,6 +1,5 @@
 import SwiftUI
 
-/// The pane column: whichever pane the history currently points at.
 struct SettingsDetailView: View {
     @Environment(SettingsNavigationState.self) private var navigation
 
@@ -18,6 +17,7 @@ struct SettingsDetailView: View {
             case .fallbacks: FallbacksSettingsView()
             case .ai: AISettingsView()
             case .quickActions: QuickActionsSettingsView()
+            case .dictation: DictationSettingsView()
             case .fileSearch: FileSearchSettingsView()
             case .notes: NotesSettingsView()
             case .snippets: SnippetsSettingsView()
@@ -33,10 +33,6 @@ struct SettingsDetailView: View {
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(
-            VisualEffectView(material: .contentBackground, blending: .behindWindow)
-                .ignoresSafeArea()
-        )
         // One host for every pane, above their scroll views so a callout is never clipped.
         .shortcutRecorderPopoverHost()
     }

@@ -10,10 +10,7 @@ final class UpdateCheckStore {
     private static let refreshInterval: TimeInterval = 24 * 3600
     /// Shorter retry, so a machine offline at launch sees a release soon after it reconnects.
     private static let retryInterval: TimeInterval = 2 * 3600
-    /// A withheld prompt is re-offered this often, this many times, then left to the daily check.
-    private static let withheldInterval: TimeInterval = 120
-    private static let withheldRetryLimit = 15
-    /// Keeps the first check, and any window it raises, clear of the login rush.
+    /// Keeps the first check clear of the login rush.
     private static let startupDelay = Duration.seconds(30)
 
     let channel: ReleaseChannel
@@ -22,51 +19,51 @@ final class UpdateCheckStore {
     /// The newest release on this channel, whether or not it is newer than what is running.
     private(set) var latest: AvailableRelease?
     private(set) var lastCheckedAt: Date?
-    private(set) var isChecking = false
+    var isChecking: Bool { checksInFlight > 0 }
 
-    /// Raised on an unskipped release; `false` answers that the prompt was withheld and is owed.
-    @ObservationIgnored var onUpdateAvailable: (@MainActor (AvailableRelease) -> Bool)?
+    @ObservationIgnored var onUpdateAvailable: (@MainActor (AvailableRelease) -> Void)?
 
     private let fileURL: URL
-    private var skippedVersion: AppVersion?
+    @ObservationIgnored private let fetch: @Sendable () async -> Data?
+    private var installedVersion: AppVersion?
+    private var checksInFlight = 0
     /// At most one uninvited appearance per version per launch.
     @ObservationIgnored private var announcedVersion: AppVersion?
-    @ObservationIgnored private var withheldRetries = 0
     @ObservationIgnored private var pump: Task<Void, Never>?
 
-    init() {
-        channel = ReleaseChannel(bundleID: Bundle.main.bundleIdentifier)
-        runningVersion = (Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String)
-            .flatMap(AppVersion.init)
-        fileURL = AppPaths.caches().appendingPathComponent("update-check.json")
+    init(
+        channel: ReleaseChannel = ReleaseChannel(bundleID: Bundle.main.bundleIdentifier),
+        runningVersion: AppVersion? = (Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String)
+            .flatMap(AppVersion.init),
+        fileURL: URL = AppPaths.caches().appendingPathComponent("update-check.json"),
+        fetch: @escaping @Sendable () async -> Data? = UpdateCheckStore.body
+    ) {
+        self.channel = channel
+        self.runningVersion = runningVersion
+        self.fileURL = fileURL
+        self.fetch = fetch
         guard let data = try? Data(contentsOf: fileURL),
             let cache = try? JSONDecoder().decode(Cache.self, from: data)
         else { return }
         latest = cache.latest
         lastCheckedAt = cache.lastCheckedAt
-        skippedVersion = cache.skippedVersion
+        installedVersion = cache.installedVersion
     }
 
     deinit { pump?.cancel() }
 
-    /// Newer than what is running. What the window offers, including a version already skipped.
+    /// Newer than what is running.
     var update: AvailableRelease? {
         guard let runningVersion else { return nil }
-        return ReleaseFeed.offer(latest, running: runningVersion, skipped: nil)
+        return ReleaseFeed.offer(latest, running: runningVersion)
     }
 
-    /// The same, minus anything dismissed. Only this may interrupt the user.
-    var unskippedUpdate: AvailableRelease? {
-        guard let runningVersion else { return nil }
-        return ReleaseFeed.offer(latest, running: runningVersion, skipped: skippedVersion)
-    }
-
-    func start() {
+    func start(after delay: Duration = UpdateCheckStore.startupDelay) {
         guard channel.updatesItself, runningVersion != nil else { return }
         // Replace rather than bail: an exited loop leaves a non-nil task that would block restart.
-        pump?.cancel()
+        stop()
         pump = Task { [weak self] in
-            try? await Task.sleep(for: Self.startupDelay)
+            try? await Task.sleep(for: delay)
             while !Task.isCancelled {
                 // Optional-chained: the sleep must not retain the store, or nothing can release it.
                 guard let wait = await self?.advance() else { return }
@@ -75,26 +72,44 @@ final class UpdateCheckStore {
         }
     }
 
+    func stop() {
+        pump?.cancel()
+        pump = nil
+    }
+
     /// The manual path: ignores freshness, and reports whether GitHub actually answered.
     @discardableResult
     func check() async -> Bool {
-        guard channel.updatesItself, !isChecking else { return false }
-        isChecking = true
-        defer { isChecking = false }
-        guard let data = await Self.body() else { return false }
+        guard channel.updatesItself else { return false }
+        checksInFlight += 1
+        defer { checksInFlight -= 1 }
+        guard let data = await fetch(), !Task.isCancelled else { return false }
         latest = ReleaseFeed.newest(from: data, channel: channel, architecture: .current)
         lastCheckedAt = Date()
         persist()
         return true
     }
 
-    /// Dismissing a version is what stops it asking again; a later one still will.
-    func skip(_ release: AvailableRelease) {
-        skippedVersion = release.version
+    func recordInstall(of version: AppVersion) {
+        installedVersion = version
         persist()
     }
 
-    /// One turn of the pump: check if due, offer what is pending, and answer how long to wait.
+    enum InstallReport: Equatable {
+        case installed(AppVersion)
+        case notInstalled(AppVersion)
+    }
+
+    /// Taken once. A newer version running came from elsewhere, so it reports nothing.
+    func takeInstallReport() -> InstallReport? {
+        guard let installed = installedVersion else { return nil }
+        installedVersion = nil
+        persist()
+        guard let runningVersion else { return nil }
+        if installed == runningVersion { return .installed(installed) }
+        return installed > runningVersion ? .notInstalled(installed) : nil
+    }
+
     private func advance() async -> TimeInterval {
         // Clamped, so a future-stamped check can't park the loop past one interval.
         let age = max(0, lastCheckedAt.map { Date().timeIntervalSince($0) } ?? .infinity)
@@ -102,27 +117,20 @@ final class UpdateCheckStore {
         if wait <= 0 {
             wait = await check() ? Self.refreshInterval : Self.retryInterval
         }
-        if announce() {
-            withheldRetries = 0
-        } else if withheldRetries < Self.withheldRetryLimit {
-            // A launch straight into the palette must not spend the day's only announcement.
-            withheldRetries += 1
-            wait = min(wait, Self.withheldInterval)
-        }
+        announce()
         return wait
     }
 
-    /// `false` only when a pending release was withheld, so the pump comes back for it.
-    private func announce() -> Bool {
-        guard let release = unskippedUpdate, announcedVersion != release.version else { return true }
-        guard onUpdateAvailable?(release) ?? true else { return false }
+    private func announce() {
+        guard !Task.isCancelled, let release = update, announcedVersion != release.version
+        else { return }
         announcedVersion = release.version
-        return true
+        onUpdateAvailable?(release)
     }
 
     private func persist() {
         let cache = Cache(
-            lastCheckedAt: lastCheckedAt, latest: latest, skippedVersion: skippedVersion)
+            lastCheckedAt: lastCheckedAt, latest: latest, installedVersion: installedVersion)
         guard let data = try? JSONEncoder().encode(cache) else { return }
         try? data.write(to: fileURL, options: .atomic)
     }
@@ -130,7 +138,7 @@ final class UpdateCheckStore {
     private struct Cache: Codable {
         var lastCheckedAt: Date?
         var latest: AvailableRelease?
-        var skippedVersion: AppVersion?
+        var installedVersion: AppVersion?
     }
 
     /// Cacheless, never `URLSession.shared`, so the snapshot on disk stays the only copy.

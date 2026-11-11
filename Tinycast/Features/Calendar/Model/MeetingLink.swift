@@ -1,6 +1,5 @@
 import Foundation
 
-/// A meeting's join link and the service behind it, read out of the event's own text.
 struct MeetingLink: Hashable, Sendable {
     let provider: Provider
     let url: URL
@@ -31,10 +30,14 @@ struct MeetingLink: Hashable, Sendable {
         detect(fields: [text])
     }
 
-    /// EventKit's `mailto:` participant URLs are opaque: `path` sees nothing, only the string does.
     static func accountAddress(of participantURL: URL, isCurrentUser: Bool) -> String? {
+        isCurrentUser ? address(of: participantURL) : nil
+    }
+
+    /// EventKit's `mailto:` participant URLs are opaque: `path` sees nothing, only the string does.
+    static func address(of participantURL: URL) -> String? {
         let string = participantURL.absoluteString
-        guard isCurrentUser, string.lowercased().hasPrefix("mailto:") else { return nil }
+        guard string.lowercased().hasPrefix("mailto:") else { return nil }
         let raw = string.dropFirst("mailto:".count)
         let address = raw.removingPercentEncoding ?? String(raw)
         guard address.contains("@") else { return nil }
@@ -51,7 +54,7 @@ struct MeetingLink: Hashable, Sendable {
     }
 
     private static let terminators: Set<Character> = [
-        " ", "\t", "\n", "\r", "\"", "'", "<", ">", "«", "»", "\u{00A0}"
+        " ", "\t", "\n", "\r", "\r\n", "\"", "'", "<", ">", "«", "»", "\u{00A0}"
     ]
     private static let trailingNoise: Set<Character> = [".", ",", ";", ":", ")", "]", "}", "!", "?"]
 
@@ -107,7 +110,7 @@ extension MeetingLink {
             case .gotoMeeting: return "GoTo Meeting"
             case .blueJeans: return "BlueJeans"
             case .skype: return "Skype"
-            case .generic: return "Meeting Link"
+            case .generic: return String(localized: "Meeting Link")
             }
         }
 

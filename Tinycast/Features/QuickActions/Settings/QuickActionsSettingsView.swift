@@ -20,19 +20,24 @@ struct QuickActionsSettingsView: View {
         Form {
             Section {
                 Toggle(isOn: enabledBinding) {
-                    SettingsRowTitle(.quickActionsQuickActions, "Enable Quick Actions")
-                    Text("Act on selected text. Nothing is read until you press a shortcut.")
+                    SettingsFeatureToggleLabel(
+                        anchor: .quickActionsQuickActions, title: "Enable Quick Actions",
+                        subtitle: "Act on selected text. Nothing is read until you press a shortcut.")
                 }
                 if appSettings.quickActionsEnabled, !isTrusted {
                     // Every shortcut fails without it; better said here than found one press later.
-                    SettingsRow(
-                        title: "Accessibility permission required",
-                        subtitle: "Needed to read your selection."
-                    ) {
+                    HStack(alignment: .center, spacing: Theme.Spacing.lg) {
                         Image(systemName: "exclamationmark.triangle.fill")
-                            .foregroundStyle(Theme.Colors.destructive)
+                            .foregroundStyle(.orange)
                             .frame(width: Theme.Size.settingsRowIcon)
-                    } trailing: {
+                        VStack(alignment: .leading, spacing: Theme.Spacing.xxs) {
+                            Text("Accessibility permission required")
+                                .foregroundStyle(.orange)
+                            Text("Needed to read your selection.")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                        Spacer(minLength: Theme.Spacing.lg)
                         Button("Open System Settings") { Permissions.openAccessibilitySettings() }
                     }
                 }
@@ -123,7 +128,6 @@ struct QuickActionsSettingsView: View {
             if !action.usesTranslationFramework {
                 editButton(title: action.title) { editingAction = action }
             }
-            // The four left the Commands pane with their kind, and its alias field with it.
             if let entry { AliasField(entry: entry) }
             ShortcutRecorder(action: .command(CommandID(action)), isQuiet: true)
             resultPicker(title: action.title, selection: previewBinding(action))
@@ -202,7 +206,7 @@ struct QuickActionsSettingsView: View {
 
     private func subtitle(for action: QuickAction) -> String? {
         let details = [
-            action.alwaysPreviews ? "Always shown in a panel" : nil,
+            action.alwaysPreviews ? String(localized: "Always shown in a panel") : nil,
             store.modelOverride(for: action).map(routeTitle)
         ].compactMap(\.self)
         return details.isEmpty ? nil : details.joined(separator: " · ")

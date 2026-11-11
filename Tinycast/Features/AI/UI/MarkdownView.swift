@@ -48,6 +48,10 @@ private struct MarkdownBlockView: View {
             MarkdownQuoteView(blocks: blocks)
         case .table(let table):
             MarkdownTableView(table: table)
+        case .math(let formula):
+            Text(formula.source)
+        case .pendingMath:
+            EmptyView()
         case .rule:
             Rectangle()
                 .fill(Theme.Colors.separator)
@@ -86,7 +90,7 @@ private struct MarkdownListView: View {
                 .foregroundStyle(Theme.Colors.textSecondary)
                 .fixedSize(horizontal: true, vertical: false)
         } else {
-            Text("•").foregroundStyle(Theme.Colors.textSecondary)
+            Text(verbatim: "•").foregroundStyle(Theme.Colors.textSecondary)
         }
     }
 

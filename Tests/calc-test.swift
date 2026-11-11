@@ -1,4 +1,3 @@
-// Standalone test for the calculator engine, compiling the real Foundation-only sources.
 import Foundation
 
 @main
@@ -8,7 +7,6 @@ struct CalcTests {
     static var passes = 0
 
     static func main() {
-        // Arithmetic & precedence
         expectDisplay("2+2", "4")
         expectDisplay("5*7", "35")
         expectDisplay("100/4", "25")
@@ -35,7 +33,7 @@ struct CalcTests {
         expectDisplay("2m / 2m to hex", "0x1")
         expectDisplay(String(repeating: "1+", count: 100) + "1", "101")
         expectNil(String(repeating: "1+", count: 128) + "1")
-        expectDisplay("2**2", "4")  // "**" is an alias for "^" (Python/JS/shell spelling)
+        expectDisplay("2**2", "4")
         expectDisplay("2**10", "1,024")
         expectDisplay("2**3**2", "512")  // right-associative, same as "^"
         expectDisplay("(5+2)*3", "21")
@@ -46,7 +44,7 @@ struct CalcTests {
         expectDisplay("10/4", "2.5")
         expectDisplay("1/3", "0.3333333333")
         expectDisplay("2.5 * 4", "10")
-        expectDisplay("1,000 + 234", "1,234")  // grouping commas accepted in input
+        expectDisplay("1,000 + 234", "1,234")
 
         // Compact thousands suffix — attached `k` is a number suffix; spaced `k` remains Kelvin
         expectDisplay("10k", "10,000")
@@ -56,14 +54,33 @@ struct CalcTests {
         expectDisplay("10k * 2", "20,000")
         expectBadges("10k", source: "Expression", target: "Result")
 
-        // Scientific notation input
+        // Magnitude words scale the literal before them, spaced or attached, in any case
+        expectDisplay("13 million", "13,000,000")
+        expectCopy("1.5 billion", "1500000000")
+        expectDisplay("2 Thousand + 1", "2,001")
+        expectDisplay("3million / 2", "1,500,000")
+        expectDisplay("13 million idr to usd", "720.10 USD")
+        expectDisplay("1.5 million idr to sgd", "112.17 SGD")
+        expectDisplay("IDR 13 million to usd", "720.10 USD")
+        expectDisplay("10% of 2 million", "200,000")
+        expectExpression("13 million +", "13 million +")
+        expectBadges("13 million", source: "Expression", target: "Result")
+        expectNil("million")
+        expectNil("2 * million")
+        expectNil("(2 + 3) million")
+        expectNil("13 millions")
+        expectNil("13 million2")
+        expectNil("1e308 billion")
+        expectDisplay("10 milliseconds to s", "0.01 s")
+        expectLocalized("1,5 million", "1.500.000", italian)
+
         expectDisplay("1e6 + 1", "1,000,001")
         expectDisplay("1.5e-3 * 2", "0.003")
         expectDisplay("2.5e8 / 2", "125,000,000")
-        expectDisplay("1E6 + 1", "1,000,001")  // uppercase E
+        expectDisplay("1E6 + 1", "1,000,001")
         expectDisplay("1e6", "1,000,000")  // a lone shorthand literal cards like "10k"
         expectDisplay("10em", "160 px")  // partial "e" isn't an exponent, so `em` stays a unit
-        expectDisplay("1e3k + 1", "1,000,001")  // exponent then compact suffix, both applied
+        expectDisplay("1e3k + 1", "1,000,001")
 
         // Exact up to 2^53, past the old 1e15 cutoff — truncating these lost real digits on copy
         expectDisplay("2^49", "562,949,953,421,312")
@@ -73,7 +90,6 @@ struct CalcTests {
         // Beyond 2^53 the precision is genuinely gone, so exponent form is the honest answer
         expectDisplay("123456789 * 123456789", "1.524157875e+16")
 
-        // Functions
         expectDisplay("sqrt(64)", "8")
         expectDisplay("sqrt 64", "8")
         expectDisplay("sqrt 64 + 36", "44")  // bare arg is one operand: sqrt(64) + 36
@@ -87,14 +103,12 @@ struct CalcTests {
         expectDisplay("floor(2.7)", "2")
         expectDisplay("ceil(2.1)", "3")
         expectDisplay("round(2.5)", "3")
-        expectDisplay("SQRT(64)", "8")  // case-insensitive
+        expectDisplay("SQRT(64)", "8")
 
-        // Constants
         expectDisplay("2*pi", "6.283185307")
         expectDisplay("π*2", "6.283185307")
         expectDisplay("e^2", "7.389056099")
 
-        // Implicit multiplication
         expectDisplay("4(2+3)", "20")
         expectDisplay("(2+3)(2+3)", "25")
         expectDisplay("2pi", "6.283185307")
@@ -107,6 +121,7 @@ struct CalcTests {
         expectDisplay("3X3", "9")
         expectDisplay("3 x -2", "-6")
         expectDisplay("2xpi", "6.283185307")
+        expectDisplay("2xsin(pi/2)", "2")
         expectDisplay("6/2x(1+2)", "9")
         expectDisplay("10 x", "10")
         expectDisplay("$5 x 2", "10.00 USD")
@@ -141,7 +156,6 @@ struct CalcTests {
         expectDisplay("1e305k", "1e+308")
         expectNil("1e5e5")
 
-        // Percent
         expectDisplay("20% of 450", "90")
         expectDisplay("450 + 20%", "540")
         expectDisplay("450 - 15%", "382.5")
@@ -157,7 +171,6 @@ struct CalcTests {
         expectNil("10 % 3")  // "%" stays percent, whatever follows it
         expectDisplay("450 + 20% - 5", "535")
 
-        // Unit conversion — length / weight / temperature / time / area / volume / storage
         expectDisplay("10km to mi", "6.213711922 mi")
         expectDisplay("10 km in miles", "6.213711922 mi")
         expectDisplay("5ft in cm", "152.4 cm")
@@ -177,6 +190,19 @@ struct CalcTests {
         expectDisplay("2hr to min", "120 min")
         expectDisplay("1day to sec", "86,400 s")
         expectDisplay("1 week to hr", "168 hr")
+        expectDisplay("3 months to days", "91.310625 day")
+        expectDisplay("3.5 years to days", "1,278.34875 day")
+        expectCopy("3.5 years to days", "1278.34875 day")
+        expectDisplay("1month in days", "30.436875 day")
+        expectDisplay("1mo -> s", "2,629,746 s")
+        expectDisplay("1YEAR to s", "31,556,952 s")
+        expectDisplay("1yr to months", "12 mo")
+        expectDisplay("12 months to years", "1 yr")
+        expectDisplay("365.2425 days to year", "1 yr")
+        expectDisplay("-0.5 years to months", "-6 mo")
+        expectDisplay("0 months to days", "0 day")
+        expectDisplay("(1 year + 6 months) to days", "547.86375 day")
+        expectBadges("3.5 years to days", source: "Years", target: "Days")
         expectDisplay("2 acre to m2", "8,093.712845 m²")
         expectDisplay("1 m² to ft²", "10.76391042 ft²")
         expectDisplay("2L -> mL", "2,000 mL")
@@ -185,9 +211,8 @@ struct CalcTests {
         expectDisplay("1 GiB to MB", "1,073.741824 MB")
         expectDisplay("1 GB to MiB", "953.6743164 MiB")
         expectDisplay("8 bit to byte", "1 B")
-        expectDisplay("2*5 km to mi", "6.213711922 mi")  // expression on the left side
+        expectDisplay("2*5 km to mi", "6.213711922 mi")
 
-        // Number bases
         expectBadges("0b1010", source: "Binary", target: "Decimal")
         expectBadges("0o17", source: "Octal", target: "Decimal")
         expectBadges("0B1010 +", source: "Binary", target: "Decimal")
@@ -204,12 +229,11 @@ struct CalcTests {
         expectDisplay("255 to octal", "0o377")
         expectDisplay("0xff", "255")  // bare radix literal echoes decimal
 
-        // Friendly category errors
         expectError("10kg to sec", "Cannot convert Weight to Time.")
         expectError("100 mL to km", "Cannot convert Volume to Length.")
         expectError("1 GB to hr", "Cannot convert Digital Storage to Time.")
+        expectError("1 year to kg", "Cannot convert Time to Weight.")
 
-        // Non-calculator input → no card
         expectNil("safari")
         expectNil("1password")
         expectNil("45")
@@ -244,6 +268,7 @@ struct CalcTests {
         expectDisplay("256 >> 2", "64")
         expectDisplay("6 & 3", "2")
         expectDisplay("5 xor 3", "6")
+        expectDisplay("5 XOR 3", "6")
         expectDisplay("~1", "-2")
         expectDisplay("1 | 2 == 3", "true")
         expectDisplay("~1 == -2", "true")
@@ -260,26 +285,28 @@ struct CalcTests {
         expectNil("-(1 == 1)")
         expectNil("sqrt(1 == 1)")
 
-        // Formatting: display grouped, copyText plain
         expectDisplay("1234567*1", "1,234,567")
         expectCopy("1234567*1", "1234567")
         expectCopy("10km to mi", "6.213711922 mi")
         expectDisplay("-1234.5-0.25", "-1,234.75")
 
-        // Card expression echo
         expectExpression("3*3", "3×3")
         expectExpression("10km to mi", "10 km")
 
-        // Badges on explicit conversions
         expectBadges("10km to mi", source: "Kilometers", target: "Miles")
         expectBadges("100 C to F", source: "Celsius", target: "Fahrenheit")
 
-        // Bare-unit auto-conversion (no connector)
         expectDisplay("1m", "3 feet 3.37007874 inches")
         expectExpression("1m", "1 m")
         expectBadges("1m", source: "Meters", target: "Feet")
         expectDisplay("1hr", "60 min")
         expectBadges("1hr", source: "Hours", target: "Minutes")
+        expectDisplay("3 weeks", "21 day")
+        expectDisplay("3 days", "72 hr")
+        expectDisplay("3 months", "91.310625 day")
+        expectDisplay("3.5 years", "1,278.34875 day")
+        expectBadges("3 months", source: "Months", target: "Days")
+        expectBadges("3.5 years", source: "Years", target: "Days")
         expectDisplay("5ft", "1.524 m")
         expectDisplay("100g", "3.527396195 oz")
         expectDisplay("2*3 kg", "6 kg")  // an operator keeps the answer in the units written
@@ -329,7 +356,6 @@ struct CalcTests {
         expectDisplay("1bar + 10psi", "24.50377377 psi")
         expectDisplay("1Gbps + 500Mbps", "1,500 Mbps")
 
-        // Unit-expression precedence, parentheses, scalar operations, and cancellation
         expectDisplay("10kg + 2 * 5kg", "20 kg")
         expectDisplay("(10kg + 5kg) * 2", "30 kg")
         expectDisplay("2 * (3kg + 500g)", "7,000 g")
@@ -348,7 +374,6 @@ struct CalcTests {
         expectDisplay("(2kg + 500g) * 4", "10,000 g")
         expectDisplay("(20kg - 5kg) / 3", "5 kg")
 
-        // Percentages carry through quantity arithmetic
         expectDisplay("10kg + 20%", "12 kg")
         expectDisplay("10kg - 20%", "8 kg")
         expectDisplay("10kg * 20%", "2 kg")
@@ -444,6 +469,44 @@ struct CalcTests {
         expectDisplay("25 USD/hr * 8hr", "200.00 USD")
         expectDisplay("8hr * 25 USD/hr", "200.00 USD")
         expectDisplay("25 USD/hr to EUR/min", "0.3833333333 EUR/min")
+        // `per` is the spoken slash, and the arithmetic words are the spoken operators
+        expectDisplay("5 usd per gallon to eur per liter", "1.215191441 EUR/L")
+        expectDisplay("5 usd per gallon in eur per liter", "1.215191441 EUR/L")
+        expectDisplay("5 USD/gal to EUR/L", "1.215191441 EUR/L")
+        expectDisplay("60 miles per hour to km/h", "96.56064 km/h")
+        expectDisplay("50 usd per hour", "50 USD/hr")
+        expectDisplay("10 divided by 2", "5")
+        expectDisplay("10 plus 5", "15")
+        expectDisplay("10 minus 3", "7")
+        expectDisplay("6 times 7", "42")
+        expectDisplay("10 multiplied by 3", "30")
+        expectNil("pages per")
+        expectNil("world times 5")
+        // A rate with no target takes the Mac's own currency and keeps its unit
+        expectDisplay("5 usd per gallon", "3.95 GBP/gal", region: "GBP")
+        expectDisplay("$5/gal", "3.95 GBP/gal", region: "GBP")
+        expectDisplay("5 usd per gallon", "5 USD/gal")
+        expectDisplay("5 USD/gal to GBP/gal", "3.95 GBP/gal")
+        expectDisplay("100 USD / 4hr", "25 USD/hr", region: "GBP")
+        expectDisplay("5 usd per gallon to eur per liter", "1.215191441 EUR/L", region: "GBP")
+        // A shared amount keeps its unit or currency, and may be any form the calculator reads
+        expectDisplay("85 + 20% split 3", "34")
+        expectDisplay("split 120 between 4", "30")
+        expectDisplay("split $120 between 4", "30.00 USD")
+        expectDisplay("$120 split 4", "30.00 USD", region: "GBP")
+        expectDisplay("120 split 4 ways", "30")
+        expectDisplay("120 / 4 people", "30")
+        expectDisplay("20% tip on 85 split 3", "5.666666667")
+        expectDisplay("10 kg split 4", "2.5 kg")
+        expectDisplay("eur 99 among 3 friends", "33.00 EUR")
+        // The share divides the unrounded whole, and a timespan is shared in full
+        expectDisplay("$1 / 6 split 2", "0.08 USD")
+        expectDisplay("150 min to timespan split 2", "1 hr 15 min")
+        expectDisplay("$120 to eur split 4", "27.60 EUR")
+        expectBadges("85 + 20% split 3", source: "Expression", target: "Per Person")
+        expectNil("split screen")
+        expectNil("120 split 0")
+        expectNil("split")
         expectDisplay("25 USD/hr / 23 EUR/hr", "1")
         expectErrorWithoutRates("25 USD/hr to EUR/hr", "Exchange rates unavailable — check your connection.")
         expectError("2 celsius * 3m", "Multiplication of these unit values is not supported.")
@@ -477,6 +540,33 @@ struct CalcTests {
         expectDisplay("100 Mbps to MB/s", "12.5 MB/s")
         expectDisplay("1 MiB/s to Mbps", "8.388608 Mbps")
         expectDisplay("1GB / 10MB/s to s", "100 s")
+        expectDisplay("500 Mbps in MBps", "62.5 MBps")
+        expectCopy("500 Mbps in MBps", "62.5 MBps")
+        expectExpression("500 Mbps in MBps", "500 Mbps")
+        expectBadges(
+            "500 Mbps in MBps", source: "Megabits per Second", target: "Megabytes per Second")
+        expectDisplay("62.5 MBps to Mbps", "500 Mbps")
+        expectDisplay("500Mbps -> MBps", "62.5 MBps")
+        expectDisplay("500 Mbps → MBps", "62.5 MBps")
+        expectDisplay("8 bps to Bps", "1 Bps")
+        expectDisplay("8 Kbps to kBps", "1 kBps")
+        expectDisplay("1 KBps to kbps", "8 Kbps")
+        expectDisplay("1 Gbps to GBps", "0.125 GBps")
+        expectDisplay("1 TBps to Tbps", "8 Tbps")
+        expectDisplay("1 MBps to kBps", "1,000 kBps")
+        expectDisplay("1 GBps to MBps", "1,000 MBps")
+        expectDisplay("1 TBps to GBps", "1,000 GBps")
+        expectDisplay("1 MBps to MB/s", "1 MB/s")
+        expectDisplay("8 Mb/s to MBps", "1 MBps")
+        expectDisplay("1 MiB/s to MBps", "1.048576 MBps")
+        expectDisplay("MBps Mbps", "8 Mbps")
+        expectDisplay("1 Bps", "8 bps")
+        expectDisplay("1 kBps", "8 Kbps")
+        expectDisplay("1 MBps", "8 Mbps")
+        expectDisplay("1 GBps", "8 Gbps")
+        expectDisplay("1 TBps", "8 Tbps")
+        expectDisplay("500 Mbps + 62.5 MBps", "125 MBps")
+        expectDisplay("1GB / 10MBps to s", "100 s")
         expectDisplay("8kbit to B", "1,000 B")
         expectDisplay("1um to nm", "1,000 nm")
         expectDisplay("1 GHz to MHz", "1,000 MHz")
@@ -575,6 +665,11 @@ struct CalcTests {
         expectDisplay("10m/s / 2s", "5 m/s²")
         expectDisplay("2kg * 3m/s²", "6 N")
         expectDisplay("1 / 20ms to hz", "50 Hz")
+        expectDisplay("100 / s to hz", "100 Hz")
+        expectDisplay("1000 / (3/s)", "333.3333333 s")
+        expectDisplay("65535 / (100/s) to minutes", "10.9225 min")
+        expectDisplay("1000 / 3 / s", "333.3333333 Hz")
+        expectNil("100 / sec")  // the secant function claims `sec` first
         expectDisplay("(1hr + 30min) to timespan", "1 hr 30 min")
         expectDisplay("100km / 40km/h to duration", "2 hr 30 min")
         expectNil("1m / 0s")
@@ -603,7 +698,67 @@ struct CalcTests {
         expectBadgesAt(
             "days till july", source: "Friday, 24 July", target: "Thursday, 1 July, 2027")
         expectDisplayAt("days until tomorrow", "1 day")
-        expectDisplayAt("weeks till 9april", "37 weeks")  // 259 / 7
+        // Ordinals and `of` fold away; a lone day and month after until/since is a date, not a decimal
+        expectDisplayAt("days until 29th of october", "97 days")
+        expectDisplayAt("days until the 29th of october", "97 days")
+        expectDisplayAt("days until 29.10", "97 days")
+        expectDisplayAt("days until 29.10.", "97 days")
+        expectDisplayAt("days until 29/10", "97 days")
+        expectDisplayAt("days until 10/29", "97 days")
+        expectDisplayAt("days since 20.7", "4 days")
+        expectDisplayAt("october 28th", "28 October")
+        expectDisplayAt("29th of october", "29 October")
+        expectDisplayAt("oct 28th at 1pm", "28 October at 1:00 PM")
+        expectNilAt("29.10")
+        expectNilAt("5th")
+        // `in 3 days`, a neighbouring period, and the edge of one
+        expectDisplayAt("in 3 days", "27 July")
+        expectDisplayAt("in 2 weeks", "7 August")
+        expectDisplayAt("in 90 min", "24 July at 1:48 AM")
+        expectNilAt("in 5 cm")
+        expectDisplayAt("10 in in cm", "25.4 cm")
+        expectDisplayAt("next week", "31 July")
+        expectDisplayAt("last month", "24 June")
+        expectDisplayAt("next year", "24 July, 2027")
+        expectDisplayAt("days until next week", "7 days")
+        expectDisplayAt("end of month", "31 July")
+        expectDisplayAt("start of the month", "1 July")
+        expectDisplayAt("end of next month", "31 August")
+        expectDisplayAt("beginning of year", "1 January")
+        expectDisplayAt("end of year", "31 December")
+        expectDisplayAt("days until end of month", "7 days")
+        expectNilAt("end of week")
+        // Fixed-date occasions; floating holidays differ by country and stay out
+        expectDisplayAt("days until christmas", "154 days")
+        expectDisplayAt("days until new years eve", "160 days")
+        expectDisplayAt("days until valentine's day", "205 days")
+        expectDisplayAt("days since halloween", "266 days")
+        expectDisplayAt("christmas + 3 days", "28 December")
+        expectNilAt("christmas")
+        expectNilAt("easter")
+        expectDisplayAt("new years eve + 3 days", "3 January, 2027")
+        expectDisplayAt("new year's eve + 3 days", "3 January, 2027")
+        expectDisplayAt("valentines day + 3 days", "17 February")
+        expectDisplayAt("valentine's day + 3 days", "17 February")
+        expectDisplayAt("valentine’s day + 3 days", "17 February")
+        let christmasNoon = clock.calendar.date(
+            from: DateComponents(year: 2026, month: 12, day: 25, hour: 12))!
+        expectDisplayAt("hrs till christmas at 9am", "8,757 hours", now: christmasNoon)
+        expectNilAt("new york")
+        // Facts about a date
+        expectDisplayAt("week number", "30")
+        expectDisplayAt("what week is it", "30")
+        expectDisplayAt("week number of christmas", "52")
+        expectDisplayAt("day of year", "205")
+        expectDisplayAt("day of the year for dec 31", "365")
+        expectBadgesAt("week number", source: "Friday, 24 July, 2026", target: "Week of the Year")
+        expectDisplayAt("age 1990-05-03", "36 years")
+        expectDisplayAt("born 3 may 1990", "36 years")
+        expectDisplayAt("age 1990-08-03", "35 years")
+        expectNilAt("age 3 may")
+        expectNilAt("age 2030-01-01")
+        expectNilAt("ages ago")
+        expectDisplayAt("weeks till 9april", "37 weeks")
         expectDisplayAt("today + 3 weeks", "14 August")
         expectDisplayAt("now + 90 min", "24 July at 1:48 AM")
         expectDisplayAt("jul 4 - today", "345 days")
@@ -618,12 +773,21 @@ struct CalcTests {
         // A slash date still reads as a date when the other side names a keyword
         expectDisplayAt("9/4 - today", "42 days")
         expectDisplayAt("today - 9/4", "-42 days")
-        // Bare date/unit words alone are app searches, not cards
-        expectNilAt("today")
+        // A lone word naming one moment answers; one that recurs is still an app search
+        expectDisplayAt("today", "24 July")
+        expectDisplayAt("tomorrow", "25 July")
+        expectDisplayAt("yesterday", "23 July")
+        expectDisplayAt("now", "24 July at 12:18 AM")
+        expectBadgesAt("tomorrow", source: "Friday, 24 July", target: "Saturday")
+        expectExpression("Today", "Today")
+        expectDisplayAt("time", "12:18 AM")
+        expectBadgesAt("time", source: "Friday, 24 July", target: "UTC")
         expectNilAt("july")
-        expectNilAt("tomorrow")
+        expectNilAt("monday")
+        expectNilAt("noon")
+        expectNilAt("todays")
+        expectNilAt("times")
 
-        // Angle units (deg is a real unit now, not just a trig postfix)
         expectDisplay("1 deg", "0.01745329252 rad")
         expectExpression("1 deg", "1 deg")
         expectBadges("1 deg", source: "Degrees", target: "Radians")
@@ -644,13 +808,40 @@ struct CalcTests {
         expectDisplay("hr min", "60 min")
         expectNil("m s")  // different categories → no card, no error
 
-        // Extra unit categories: speed / pressure / data rate
         expectDisplay("100 kmh to mph", "62.13711922 mph")
         expectDisplay("60 mph to kmh", "96.56064 km/h")
         expectDisplay("100 mbps to kbps", "100,000 Kbps")
         expectBadges("100 kmh to mph", source: "Kilometers per Hour", target: "Miles per Hour")
 
-        // Bare-unit auto-conversion gaps: same category, same treatment.
+        // Fuel economy and consumption: no reciprocal rule joins the two
+        expectDisplay("36 mpg", "15.30517347 km/L")
+        expectBadges("36 mpg", source: "Miles per Gallon", target: "Kilometers per Liter")
+        expectDisplay("15 km/l to mpg", "35.2821875 mpg")
+        expectDisplay("100 mi / 4 gal to mpg", "25 mpg")
+        expectDisplay("24.5 l / 350 km to l/100km", "7 L/100km")
+        expectDisplay("1 / 36 mpg to l/100km", "6.533738426 L/100km")
+        // Economy and consumption are reciprocals, as are speed and pace
+        expectDisplay("30 mpg to l/100km", "7.840486111 L/100km")
+        expectDisplay("6.5 l/100km to mpg", "36.18685897 mpg")
+        expectDisplay("8 l/100km to km/l", "12.5 km/L")
+        expectDisplay("10 km/h to min/km", "6 min/km")
+        expectDisplay("6 min/km to km/h", "10 km/h")
+        expectDisplay("10 mph to min/mi", "6 min/mi")
+        expectNil("0 mpg to l/100km")
+        expectError("1 hz to s", "Cannot convert Frequency to Time.")
+        expectError("10 km to min/km", "Cannot convert Length to Compound Units.")
+        expectError("10 mpg to kg", "Cannot convert Fuel Economy to Weight.")
+        // Area shares fuel's dimension and stays an error; a typed fuel ratio still inverts
+        expectError("1 m2 to mpg", "Cannot convert Area to Fuel Economy.")
+        expectError("10 mpg to m2", "Cannot convert Fuel Economy to Area.")
+        expectError("10 m2 to m^-2", "Cannot convert Area to Compound Units.")
+        expectError("1 ha to mpg", "Cannot convert Area to Fuel Economy.")
+        expectError("5m * 4m to mpg", "Cannot convert Area to Fuel Economy.")
+        expectDisplay("100 mi / 4 gal to l/100km", "9.408583333 L/100km")
+        expectDisplay("24.5 l / 350 km to mpg", "33.60208333 mpg")
+        expectDisplay("(24.5 l / 350 km) to km/l", "14.28571429 km/L")
+        expectNil("0 mi / 4 gal to l/100km")
+
         expectDisplay("5 mbar", "0.07251886887 psi")
         expectDisplay("5 kPa", "0.7251886887 psi")
         expectDisplay("5 hPa", "0.07251886887 psi")
@@ -659,21 +850,17 @@ struct CalcTests {
         expectDisplay("100 bps", "0.1 Kbps")
         expectDisplay("1 Tbps", "1,000 Gbps")
 
-        // Base conversion accepts an expression on the value side, as unit conversion does.
         expectDisplay("2*128 to hex", "0x100")
         expectDisplay("10*5 to hex", "0x32")
 
-        // Percentage phrasings
         expectDisplay("20% off 500", "400")
         expectDisplay("50 as % of 200", "25%")
 
-        // Badges on paths that previously had none
         expectBadges("255 to hex", source: "Decimal", target: "Hexadecimal")
         expectBadges("0xff to decimal", source: "Hexadecimal", target: "Decimal")
         expectBadges("3*3", source: "Expression", target: "Result")
         expectBadges("20% off 500", source: "Expression", target: "Discounted")
 
-        // days since — past elapsed, against the fixed clock (Fri 2026-07-24)
         expectDisplayAt("days since 9jul", "15 days")
         expectBadgesAt("days since 9jul", source: "Thursday, 9 July", target: "Friday, 24 July")
         expectDisplayAt("weeks since 3jul", "3 weeks")
@@ -688,16 +875,53 @@ struct CalcTests {
         expectDisplay("50 GBP in euros", "58.23 EUR")
         expectDisplay("100 dollars to yen", "15,700.00 JPY")
         expectDisplay("100 usd -> eur", "92.00 EUR")
-        expectDisplay("2*50 usd to eur", "92.00 EUR")  // expression on the value side
+        expectDisplay("2*50 usd to eur", "92.00 EUR")
         expectDisplay("eur to usd", "1.09 USD")  // implied amount of 1
         expectCopy("100 dollars to yen", "15700.00 JPY")
-        // Currency signs, prefixed and suffixed
+        expectDisplay("100 usd eur", "92.00 EUR")
+        expectDisplay("100 usd eur", "92.00 EUR", region: "GBP")
+        expectDisplay("2*50 usd eur", "92.00 EUR")
+        expectDisplay("€20 gbp", "17.17 GBP")
+        expectDisplay("USD1K eur", "920.00 EUR")
+        expectDisplay("10 pounds euros", "11.65 EUR")
+        expectError("5 usd npr", "No exchange rate for NPR.")
+        expectNil("usd eur")
+        expectNil("try all")
+        expectNil("10 usd kg")
+        expectDisplay("100/4 usd to eur", "23.00 EUR")
+        expectDisplay("100/4 usd eur", "23.00 EUR")
+        expectDisplay("-5 pounds to euros", "-5.82 EUR")
+        expectDisplay("2*50 pounds to euros", "116.46 EUR")
+        expectDisplay("-5 pounds to kg", "-2.26796185 kg")
+        expectError("100/4 usd to npr", "No exchange rate for NPR.")
+        expectErrorWithoutRates(
+            "100/4 usd to eur", "Exchange rates unavailable — check your connection.")
+        expectError("10 kg + 5 usd to eur", "Cannot add Weight and Currency.")
         expectDisplay("€20 to GBP", "17.17 GBP")
         expectDisplay("20€ to GBP", "17.17 GBP")
         expectDisplay("USD1K to EUR", "920.00 EUR")
         expectDisplay("1kUSD to EUR", "920.00 EUR")
         expectDisplay("£50 in dollars", "63.29 USD")
         expectDisplay("$100 to yen", "15,700.00 JPY")
+        expectDisplay("400K xof in €", "609.80 EUR")
+        expectDisplay("400K xof to €", "609.80 EUR")
+        expectDisplay("400K XOF in €", "609.80 EUR")
+        expectDisplay("400Kxof to eur", "609.80 EUR")
+        expectDisplay("400000 XoF to eur", "609.80 EUR")
+        expectDisplay("xof 400K to €", "609.80 EUR")
+        expectCopy("400K xof in €", "609.80 EUR")
+        expectBadges("400K xof in €", source: "West African CFA Franc", target: "Euro")
+        expectDisplay("100 xrp to usd", "50.00 USD")
+        expectDisplay("100XRP to usd", "50.00 USD")
+        expectDisplay("2 x 100xrp to usd", "100.00 USD")
+        expectDisplay("-100 xrp to usd", "-50.00 USD")
+        for code in ["XAF", "XPF", "XCD", "XCG", "XDR", "XAU", "XAG", "XLM", "XMR"] {
+            expectError("100 \(code.lowercased()) to usd", "No exchange rate for \(code).")
+            expectError("100\(code) in usd", "No exchange rate for \(code).")
+        }
+        expectErrorWithoutRates(
+            "400K xof in €", "Exchange rates unavailable — check your connection.")
+        expectNil("100 xofx to eur")
         // Sub-cent cross-rates widen instead of collapsing to 0.00
         expectDisplay("1 jpy to usd", "0.006369 USD")
         // …and stay in plain notation past 1e-5, where "%g" would flip to "5.539e-05"
@@ -708,7 +932,6 @@ struct CalcTests {
         expectDisplay("10 pounds", "4.5359237 kg")
         expectDisplay("10 pounds to euros", "11.65 EUR")
         expectBadges("10 pounds to euros", source: "British Pound", target: "Euro")
-        // Currency ↔ unit is a friendly category error, like Weight ↔ Time
         expectError("10 usd to kg", "Cannot convert Currency to Weight.")
         expectError("10 kg to usd", "Cannot convert Weight to Currency.")
         // A known currency the snapshot doesn't quote, and no snapshot at all
@@ -763,7 +986,6 @@ struct CalcTests {
         // CUP (Cuban peso) is a generated code that collides with a unit; volume still wins
         expectDisplay("1 cup to ml", "236.5882365 mL")
 
-        // Currency expressions — still pure and deterministic against the injected rate table
         expectDisplay("10$", "10.00 USD")
         expectExpression("10$", "10 USD")
         expectBadges("10$", source: "Expression", target: "US Dollar")
@@ -771,7 +993,6 @@ struct CalcTests {
         expectDisplay("10$ + 5$", "15.00 USD")
         expectDisplay("$10 + €5", "14.20 EUR")
         expectDisplay("€5 + $10", "15.43 USD")
-        // Sign-first money echoes amount-first, like every other quantity
         expectExpression("$10 + €5", "10 USD + 5 EUR")
         expectExpression("10$ + 5€", "10 USD + 5 EUR")
         expectDisplay("$10 * 2", "20.00 USD")
@@ -800,10 +1021,79 @@ struct CalcTests {
         // A trailing suffix reports through the same conversion the group uses.
         expectError("($10 + $5) to npr", "No exchange rate for NPR.")
         expectError("(1kg + 500g) to usd", "Cannot convert Weight to Currency.")
-        // A mid-expression `to` converts before it adds; `* 30` stays ambiguous, so it needs parens
-        expectNil("20 eur to usd * 30")
-        expectNil("20 eur to usd / 2")
+        expectDisplay("20 eur to usd * 30", "652.17 USD")
+        expectDisplay("20 eur to usd / 2", "10.87 USD")
         expectDisplay("20 eur to usd + 5 usd", "26.74 USD")
+        expectDisplay("1000 usd in eur/12", "76.67 EUR")
+        expectCopy("1000 usd in eur/12", "76.67 EUR")
+        expectExpression("1000 usd in eur/12", "1000 USD in EUR ÷ 12")
+        expectBadges("1000 usd in eur/12", source: "Expression", target: "Euro")
+        expectDisplay("1000USD in EUR/12", "76.67 EUR")
+        expectDisplay("$1000 in €/12", "76.67 EUR")
+        expectDisplay("1000 usd to eur * 2", "1,840.00 EUR")
+        expectDisplay("1000 usd → eur / 4", "230.00 EUR")
+        expectDisplay("1000 usd -> eur / 4", "230.00 EUR")
+        expectDisplay("1000 usd in eur + 20", "940.00 EUR")
+        expectDisplay("1000 usd in eur - 20", "900.00 EUR")
+        expectDisplay("1000 usd in eur * 3%", "27.60 EUR")
+        expectDisplay("1000 usd in eur / 25%", "3,680.00 EUR")
+        expectDisplay("1000 usd in eur / (2 + 3)", "184.00 EUR")
+        expectDisplay("1000 usd in eur / -2", "-460.00 EUR")
+        expectDisplay("1000 usd in eur / 2^3", "115.00 EUR")
+        expectDisplay("1000 usd in eur / 2 * 3 + 5", "1,385.00 EUR")
+        expectDisplay("(1000 usd in eur / 12) * 3", "230.00 EUR")
+        expectDisplay("1000 usd in eur / 12 +", "76.67 EUR")
+        expectDisplay("1000 usd in eur /", "920.00 EUR")
+        expectDisplay("1 btc in usd / 12", "5,000.00 USD")
+        expectDisplay("1200 xof in eur / 2", "0.91 EUR")
+        expectDisplay("10km to m / 4", "2,500 m")
+        expectDisplay("10in in cm / 2", "12.7 cm")
+        expectDisplay("20 pounds to kg / 2", "4.5359237 kg")
+        expectDisplay("500 Mbps in MBps / 2", "31.25 MBps")
+        expectDisplay("1hr to min * 2", "120 min")
+        expectDisplay("20 celsius to fahrenheit / 2", "34 °F")
+        expectDisplay("10 celsius + 20 fahrenheit in celsius + 5 celsius", "8.333333333 °C")
+        expectDisplay("100km/h in m/s / 2", "13.88888889 m/s")
+        expectDisplay("25 USD/hr in EUR/min * 2", "0.7666666667 EUR/min")
+        expectDisplay("2m2 in cm^2 / 2", "10,000 cm²")
+        expectDisplay("1kg/m3 in g/cm3 * 2", "0.002 g/cm³")
+        expectDisplay("100km/h in m/s + 2m/s", "29.77777778 m/s")
+        expectDisplay("1000 usd / 12 in eur", "76.67 EUR")
+        expectDisplay("1000 usd + 200 usd in eur", "1,104.00 EUR")
+        // A mid-expression conversion takes the whole term before it, never part of a composite
+        expectDisplay("2 * 500 usd in eur / 4", "230.00 EUR")
+        expectDisplay("1000 usd / 4 to eur / 2", "115.00 EUR")
+        expectDisplay("1000 usd in eur / 2 to gbp + 1 gbp", "396.00 GBP")
+        expectDisplay("5 ft 3 in in cm / 2", "80.01 cm")
+        expectDisplay("5 ft 3 in in cm + 1 cm", "161.02 cm")
+        expectDisplay("100 km / 2 h in m/s / 2", "6.944444444 m/s")
+        expectDisplay("2m * 3m to cm2 + 1 cm2", "60,001 cm²")
+        expectDisplay("round(1000 usd in eur)", "920.00 EUR")
+        expectDisplay("max(1000 usd in eur, 900 eur)", "920.00 EUR")
+        expectDisplay("min(10 kg to lb, 30 lb)", "22.04622622 lb")
+        expectLocalized("max(1.000 usd in eur; 900 eur)", "920,00 EUR", italian)
+        expectDisplay("1000 usd in eur > 900 eur", "true")
+        expectDisplay("10 kg to lb == 10 kg", "true")
+        expectNil("1000 usd in eur & 3")
+        expectNil("1000 usd in eur)")
+        expectNil("10 kg to lb to oz")
+        expectLocalized("1.000 usd in eur / 12", "76,67 EUR", italian)
+        expectNil("1000 usd in eur / 0")
+        expectNil("1000 usd in eur / 0%")
+        expectNil("1000 usd in eur / (2 - 2)")
+        expectNil("1000 usd in eur / nonsense")
+        expectNil("1000 usd in eur / (2 +)")
+        expectNil("1000 usd in eur / 2 nonsense")
+        expectNil("1000 usd in eur nonsense / 2")
+        expectNil("1000 usd in eur / 1e-999")
+        expectNil("1000 usd in eur / 1e308 * 1e308 * 1e308")
+        expectNil("100km/h in m/s nonsense / 2")
+        expectNil("100km/h in m/s / (2 +)")
+        expectError("1000 usd in npr / 12", "No exchange rate for NPR.")
+        expectErrorWithoutRates(
+            "1000 usd in eur / 12", "Exchange rates unavailable — check your connection.")
+        expectError("10kg in usd / 2", "Cannot convert Weight to Currency.")
+        expectError("100km/h in kg/s / 2", "Cannot convert Speed to Compound Units.")
         expectDisplay("$10 +", "10.00 USD")
         expectBadges("$10 +", source: "Expression", target: "US Dollar")
         // Juxtaposition multiplies on either side of the amount, same as an explicit "*"
@@ -864,7 +1154,6 @@ struct CalcTests {
         expectNil("usd", region: "INR")
         expectNil("btc", region: "INR")
 
-        // The feed decoding, exercised the way the store hands it over
         expectSnapshot(
             "fiat only", fiat: fiatJSON, crypto: nil,
             expected: "USD=1 EUR=0.9 BTC=nil complete=false")
@@ -907,7 +1196,6 @@ struct CalcTests {
         expectDisplay("2 businessdays to hours", "16 hr")
         expectBadges("55h in workdays", source: "Hours", target: "Workdays")
 
-        // The rest of the trig set, plus the constants that come with it
         expectDisplay("cot(1)", "0.6420926159")
         expectDisplay("sec(1)", "1.850815718")
         expectDisplay("csc(1)", "1.188395106")
@@ -927,7 +1215,6 @@ struct CalcTests {
         expectDisplay("10 sec to min", "0.1666666667 min")
         expectDisplay("30 sec + 1 min", "1.5 min")
 
-        // Percentage and ratio phrasings
         expectDisplay("15% tip on 42", "6.3")
         expectDisplay("20% tip of 80", "16")
         expectDisplay("50 is what % of 200", "25%")
@@ -951,8 +1238,8 @@ struct CalcTests {
         expectNil("average of 5")
         expectNil("10,5")
 
-        // Timespans break a duration into the units that fit it
         expectDisplay("145 mins to timespan", "2 hr 25 min")
+        expectDisplay("1 month to timespan", "4 wk 2 day 10 hr 29 min 6 s")
         expectDisplay("8700 s to timespan", "2 hr 25 min")
         expectDisplay("90000 s to timespan", "1 day 1 hr")
         expectDisplay("55 h to timespan", "2 day 7 hr")
@@ -989,6 +1276,63 @@ struct CalcTests {
         expectDisplayAt("9:30am in nyc", "5:30 AM")
         expectDisplayAt("5pm in tokyo", "2:00 AM (tomorrow)")
         expectBadgesAt("5pm london in sf", source: "London", target: "Los Angeles")
+        // A day and a clock resolve on the source zone's own calendar, so DST follows the date
+        expectDisplayAt("oct 28 at 1pm et", "Wednesday, 28 October at 5:00 PM")
+        expectDisplayAt("October 28th at 1PM ET", "Wednesday, 28 October at 5:00 PM")
+        expectDisplayAt("nov 2 1pm et", "Monday, 2 November at 6:00 PM")
+        expectDisplayAt("2026-10-28 13:00 est", "Wednesday, 28 October at 5:00 PM")
+        expectDisplayAt("oct 28 1pm et in pst", "Wednesday, 28 October at 10:00 AM")
+        expectDisplayAt("oct 28 1pm new york in tokyo", "Thursday, 29 October at 2:00 AM")
+        expectDisplayAt("oct 28 1pm et + 2h", "Wednesday, 28 October at 7:00 PM")
+        expectDisplayAt("tomorrow 3pm pst", "Friday, 24 July at 10:00 PM")
+        expectDisplayAt("1pm et tomorrow", "Friday, 24 July at 5:00 PM")
+        expectBadgesAt("oct 28 at 1pm et", source: "New York", target: "UTC")
+        expectNilAt("oct 28 at 1pm junk")
+        expectNilAt("oct 28 et")
+        // Offsets are attached; a spaced `+` still shifts the answer
+        expectDisplayAt("10am utc+5", "5:00 AM")
+        expectDisplayAt("9am gmt-5 in tokyo", "11:00 PM")
+        expectDisplayAt("10am utc+5:30 in london", "5:30 AM")
+        expectBadgesAt("10am utc+5", source: "UTC+5", target: "UTC")
+        expectBadgesAt("10am utc+5:30 in london", source: "UTC+5:30", target: "London")
+        expectNilAt("10am utc+15")
+        // A span converts both ends, a list shares one card, and neither needs a date
+        expectDisplayAt("9am-5pm et in cet", "3:00 PM – 11:00 PM")
+        expectDisplayAt("9am to 5pm et in tokyo", "10:00 PM – 6:00 AM")
+        expectDisplayAt("10pm-2am london in sf", "2:00 PM – 6:00 PM")
+        expectDisplayAt("9am-5pm in tokyo", "6:00 PM – 2:00 AM")
+        expectDisplayAt("oct 28 9am-5pm et in london", "Wednesday, 28 October, 1:00 PM – 9:00 PM")
+        expectBadgesAt("9am-5pm et in cet", source: "New York", target: "Paris")
+        expectNilAt("9am-5pm")
+        expectNilAt("9am-5pm et in new york")
+        // A spaced meridiem joins a clock with minutes, and an overnight end advances in the source zone
+        expectDisplayAt("9:30 am to 5:30 pm et in cet", "3:30 PM – 11:30 PM")
+        expectDisplayAt("tomorrow at 1:30 pm et in tokyo", "Saturday, 25 July at 2:30 AM")
+        expectDisplayAt("oct 31 9pm-5am et in london", "Sunday, 1 November, 1:00 AM – 10:00 AM")
+        expectNilAt("2026-03-07 11pm-2:30am et in london")
+        expectDisplayAt("dec 31 10pm-2am et in london", "Friday, 1 January, 2027, 3:00 AM – 7:00 AM")
+        expectNilAt("2026-03-08 2:30am et in london")
+        expectDisplayAt(
+            "1pm et in london, tokyo, sydney", "6:00 PM · 2:00 AM (tomorrow) · 3:00 AM (tomorrow)")
+        expectBadgesAt(
+            "1pm et in london, tokyo, sydney", source: "New York", target: "London · Tokyo · Sydney")
+        expectCopyAt("1pm et in london, tokyo, sydney", "London 6:00 PM, Tokyo 2:00 AM, Sydney 3:00 AM")
+        expectDisplayAt("time in london, tokyo and sydney", "1:18 AM · 9:18 AM · 10:18 AM")
+        expectNilAt("1pm et in london, nowhere")
+        // The locale's hour cycle, which the 24-hour switch overrides, picks the clock
+        var hour24 = clock.calendar
+        hour24.locale = Locale(identifier: "en_US@hours=h23")
+        var britain = clock.calendar
+        britain.locale = Locale(identifier: "en_GB")
+        var britain12 = clock.calendar
+        britain12.locale = Locale(identifier: "en_GB@hours=h12")
+        expectDisplayAt("time in tokyo", "09:18", calendar: hour24)
+        expectDisplayAt("5pm in tokyo", "02:00 (tomorrow)", calendar: hour24)
+        expectDisplayAt("unix -1", "31 December, 1969 at 23:59:59", calendar: hour24)
+        expectDisplayAt("now + 90 min", "24 July at 01:48", calendar: hour24)
+        expectDisplayAt("time in sf", "17:18 (yesterday)", calendar: britain)
+        expectBadgesAt("hrs till 9am", source: "00:18", target: "09:00", calendar: britain)
+        expectDisplayAt("time in sf", "5:18 pm (yesterday)", calendar: britain12)
 
         let zoneNow = clock.calendar.date(
             from: DateComponents(year: 2026, month: 9, day: 15, hour: 12))!
@@ -1039,7 +1383,8 @@ struct CalcTests {
             calendar.timeZone = TimeZone(identifier: home)!
             let expected = CalcResult(
                 expression: "5:30 PM", sourceBadge: "Los Angeles", targetBadge: target,
-                payload: .value(display: time + dayNote, copyText: time))
+                payload: .value(display: time + dayNote, copyText: time),
+                canChain: false)
             for query in [
                 "5:30pm SF", "5:30 pm SF", "17:30 San Francisco", "5:30 PM SFO",
                 "  5:30\tpm\u{00A0}sf  "
@@ -1098,7 +1443,6 @@ struct CalcTests {
         expectDisplay("1 cup to ml", "236.5882365 mL")
         expectNil("time in xyzzy")
         expectNil("in tokyo")
-        expectNil("time")
 
         // IATA airport codes, which Foundation has no notion of
         expectDisplayAt("time in vie", "2:18 AM")
@@ -1160,14 +1504,12 @@ struct CalcTests {
         expectNil("monday in 3 kg")
         expectDisplay("10 in in cm", "25.4 cm")
 
-        // A zone's offset from the Mac's own
         expectDisplayAt("diff paris", "2:18 AM (+2h)")
         expectDisplayAt("time diff tokyo", "9:18 AM (+9h)")
         expectDisplayAt("diff kolkata", "5:48 AM (+5h 30m)")
         expectBadgesAt("diff paris", source: "UTC", target: "Paris")
         expectNil("diff xyzzy")
 
-        // A duration where a zone would go, and both at once
         expectDisplayAt("time in 4 hours", "4:18 AM")
         expectDisplayAt("time in 90 min", "1:48 AM")
         expectDisplayAt("time in 4 hours in san francisco", "9:18 PM (yesterday)")
@@ -1231,11 +1573,9 @@ struct CalcTests {
         expectBadgesAt("25. aug", source: "Friday, 24 July", target: "Tuesday")
         // A bare date takes the year it is nearest, so it agrees with the same date plus a shift
         expectDisplayAt("25. aug + 3", "28 August")
-        // A month or a relative word alone is still an app search
+        // A month alone is still an app search
         expectNilAt("july")
         expectNilAt("aug")
-        expectNilAt("today")
-        expectNilAt("tomorrow")
 
         // Date arithmetic chains left to right, however many terms it carries
         expectDisplayAt("17.2.26 + 100 week days - 4 + 2", "5 July")
@@ -1307,20 +1647,23 @@ struct CalcTests {
         expectDisplayAt("what time is it to Tokyo", "9:18 AM")
         let usaExpected = CalcResult(
             expression: "12:00 PM", sourceBadge: "UTC", targetBadge: "New York",
-            payload: .value(display: "8:00 AM", copyText: "8:00 AM"))
+            payload: .value(display: "8:00 AM", copyText: "8:00 AM"),
+            canChain: false)
         let usaNow = CalcEngine.evaluate("now in usa", now: zoneNow, calendar: clock.calendar)
         check("now in usa", expected: "true", got: "\(usaNow == usaExpected)")
         for query in ["Canada timezone", "Canada time zone", "timezone Canada", "timezone in Canada"] {
             let expected = CalcResult(
                 expression: "12:00 PM", sourceBadge: "UTC", targetBadge: "Toronto",
-                payload: .value(display: "8:00 AM", copyText: "8:00 AM"))
+                payload: .value(display: "8:00 AM", copyText: "8:00 AM"),
+                canChain: false)
             let actual = CalcEngine.evaluate(query, now: zoneNow, calendar: clock.calendar)
             check(query, expected: "true", got: "\(actual == expected)")
         }
         for query in ["Canada time to China", "Canada timezone to China", "Canada time zone to China"] {
             let expected = CalcResult(
                 expression: "8:00 AM", sourceBadge: "Toronto", targetBadge: "Shanghai",
-                payload: .value(display: "8:00 PM", copyText: "8:00 PM"))
+                payload: .value(display: "8:00 PM", copyText: "8:00 PM"),
+                canChain: false)
             let actual = CalcEngine.evaluate(query, now: zoneNow, calendar: clock.calendar)
             check(query, expected: "true", got: "\(actual == expected)")
         }
@@ -1448,11 +1791,7 @@ struct CalcTests {
         expectDisplayAt("1:00 - 3:00", "-2 hr", calendar: vienna)
         let springNow = clock.calendar.date(from: DateComponents(year: 2026, month: 3, day: 29))!
         expectNilAt("2:30am vienna in london", now: springNow, calendar: vienna)
-        // A lone date word is still an app search
-        expectNilAt("tomorrow")
-        expectNilAt("today")
 
-        // Spoken function and operator names
         expectDisplay("square root of 625", "25")
         expectDisplay("square root of 64", "8")
         expectDisplay("cube root of 27", "3")
@@ -1477,7 +1816,6 @@ struct CalcTests {
         expectDisplayAt("2 weeks ago", "10 July")
         expectDisplayAt("3 days ago", "21 July")
         expectBadgesAt("5 weekdays from now", source: "Friday, 24 July", target: "Friday")
-        // A month name with both a day and a year
         expectDisplayAt("august 26 2026 + 15 workdays", "16 September")
         expectDisplayAt("august 26 2026 + 15 days", "10 September")
         expectDisplayAt("26 august 2026 + 1 day", "27 August")
@@ -1487,7 +1825,6 @@ struct CalcTests {
         expectDisplay("3 workdays in hours", "24 hr")
         expectNil("5 from 10")
 
-        // A conversion mid-expression, which used to need parentheses
         expectDisplay("10kg to lb + 3lb", "25.04622622 lb")
         expectDisplay("10kg to lb - 1lb", "21.04622622 lb")
         expectDisplay("100 km/h to mph + 3mph", "65.13711922 mph")
@@ -1502,9 +1839,485 @@ struct CalcTests {
         expectDisplay("2hr + 30min to min", "150 min")
 
         localeTests()
+        chainTests()
+        phraseTests()
+        wordingTests()
 
         print("\n\(passes) passed, \(failures) failed")
         exit(failures == 0 ? 0 : 1)
+    }
+
+    // MARK: - Fractions, spoken forms and natural-language phrases
+
+    static func phraseTests() {
+        // A tight fraction before a unit is one amount; spaced division and bare fractions still divide
+        expectDisplay("5/16\" in mm", "7.9375 mm")
+        expectDisplay("5/16 inch in mm", "7.9375 mm")
+        expectDisplay("5/16 in to cm", "0.79375 cm")
+        expectDisplay("3/8 in to mm", "9.525 mm")
+        expectDisplay("1 1/2 cups to ml", "354.8823548 mL")
+        expectDisplay("2 1/4 lb to g", "1,020.582833 g")
+        expectDisplay("5'10\" in cm", "177.8 cm")
+        expectDisplay("6′2″ to m", "1.8796 m")
+        expectDisplay("1 / 20ms to hz", "50 Hz")
+        expectDisplay("1 / 1kg", "1 kg^-1")
+        expectDisplay("5/2 - 1/2", "2")
+        expectDisplay("120 / 4 people", "30")
+        expectNil("1 1/2")
+        expectNil("5 3")
+
+        expectDisplay("4 squared", "16")
+        expectDisplay("3 cubed + 1", "28")
+        expectDisplay("(2+1) squared", "9")
+        expectDisplay("2 to the power of 10", "1,024")
+        expectDisplay("10 km to m", "10,000 m")
+
+        // A magnitude letter only scales money, where it can't mean metre or byte
+        expectDisplay("$2M / 4", "500,000.00 USD")
+        expectDisplay("€1.5bn / 3", "500,000,000.00 EUR")
+        expectNil("$5mb")
+
+        expectDisplay("root 4 of 81", "3")
+        expectDisplay("root 3 of -27", "-3")
+        expectNil("root 2 of -4")
+        expectDisplay("log 81 base 3", "4")
+        expectDisplay("cos(60°)", "0.5")
+
+        expectDisplay("2 nautical miles to km", "3.704 km")
+        expectDisplay("250 sq ft to m2", "23.22576 m²")
+        expectDisplay("3 cubic feet to l", "84.95053978 L")
+
+        // A rate over time answers in its own numerator
+        expectDisplay("60 mph * 2.5 hours", "150 mi")
+        expectDisplay("90km/h * 20min", "30 km")
+        expectDisplay("10 l/min * 30 s", "5 L")
+        expectDisplay("12 kg/day * 1 week", "84 kg")
+
+        expectDisplay("256 as hex", "0x100")
+        expectDisplay("10 km as m", "10,000 m")
+        expectDisplay("150 min as timespan", "2 hr 30 min")
+
+        // Percent phrases keep the amount's money or unit
+        expectDisplay("15% on 80", "92")
+        expectBadges("15% on 80", source: "Expression", target: "Increased")
+        expectDisplay("25% off $60", "45.00 USD")
+        expectDisplay("90 is 10% off what", "100")
+        expectDisplay("$66 is 10% on what", "60.00 USD")
+        expectDisplay("30 as a % of 120", "25%")
+        expectDisplay("45 is what % off 50", "10%")
+        expectDisplay("66 is what % on 60", "10%")
+        expectDisplay("80 to 100 is what %", "25%")
+        expectDisplay("80 to 60 as %", "-25%")
+        expectBadges("80 to 100 is what %", source: "Expression", target: "Percent Change")
+        expectDisplay("0.125 as %", "12.5%")
+        expectDisplay("3/8 as percent", "37.5%")
+        expectDisplay("1/8 is what %", "12.5%")
+        expectDisplay("$30 is what % of $120", "25%")
+        expectDisplay("750 m as % of 3 km", "25%")
+        expectDisplay("half of 90", "45")
+        expectDisplay("half of $90", "45.00 USD")
+        expectDisplay("25% off $60 split 3", "15.00 USD")
+
+        expectDisplay("gcd of 12 and 18", "6")
+        expectDisplay("lcm of 4 and 6", "12")
+        expectDisplay("larger of 3 and 7", "7")
+        expectDisplay("smaller of 3 and 7", "3")
+        expectDisplay("midpoint between 10 and 30", "20")
+
+        expectDisplay("2/3 to 3 dp", "0.667")
+        expectDisplay("pi to 2 decimal places", "3.14")
+        expectDisplay("2.5 rounded", "3")
+        expectDisplay("2.5 rounded down", "2")
+        expectDisplay("2.1 rounded up", "3")
+        expectDisplay("44 to nearest 10", "40")
+        expectDisplay("44 rounded up to nearest 10", "50")
+        expectDisplay("$1,240 rounded to nearest hundred", "1,200.00 USD")
+        expectBadges("2.5 rounded", source: "Expression", target: "Rounded")
+        expectDisplay("0.625 as fraction", "5/8")
+        expectDisplay("6/8 as a fraction", "3/4")
+        expectDisplay("25% as fraction", "1/4")
+        expectNil("pi as fraction")
+        expectBadges("0.625 as fraction", source: "Expression", target: "Fraction")
+
+        expectDisplay("$2,000 after 5 years at 4%", "2,433.31 USD")
+        expectDisplay("$2,000 at 4% for 5 years compounding quarterly", "2,440.38 USD")
+        expectDisplay("interest on $2,000 after 5 years at 4%", "433.31 USD")
+        expectDisplay("$2,000 for 18 months at 4%", "2,121.19 USD")
+        expectDisplay("monthly payment on $20,000 over 5 years at 6%", "386.66 USD")
+        expectDisplay("total payment on $20,000 over 5 years at 6%", "23,199.36 USD")
+        expectDisplay("monthly payment on 12000 over 1 year at 0%", "1,000")
+        expectBadges("$2,000 after 5 years at 4%", source: "Expression", target: "Future Value")
+
+        expectDisplay("2.75 hours in hours and minutes", "2 hr 45 min")
+        expectDisplay("1.5 weeks in days and hours", "10 day 12 hr")
+        expectDisplay("200 s in minutes and seconds", "3 min 20 s")
+        expectNil("5 km in hours and minutes")
+
+        // Spans between two moments; the clock is Friday 24 July 2026
+        expectDisplayAt("may 1 to may 31", "30 days")
+        expectDisplayAt("may 1 through may 31", "31 days")
+        expectDisplayAt("weeks between june 1 and june 29", "4 weeks")
+        expectDisplayAt("from 9:15 to 17:45", "8 hr 30 min")
+        expectDisplayAt("10pm to 2am", "4 hr")
+        expectBadgesAt(
+            "10pm to 2am", source: "Friday, 24 July at 10:00 PM", target: "Saturday, 25 July at 2:00 AM")
+        expectDisplayAt("hours from 8am to 6pm", "10 hours")
+        expectDisplayAt("workdays between july 27 and august 7", "9 workdays")
+        expectDisplayAt("august 3 to august 14 in workdays", "9 workdays")
+        expectNilAt("5/2 to 1/2")
+        expectDisplayAt("2 weeks after august 3", "17 August")
+        expectDisplayAt("3 days before christmas", "22 December")
+
+        expectDisplayAt("weekday on 1 january 2030", "Tuesday")
+        expectBadgesAt("weekday on 1 january 2030", source: "1 January, 2030", target: "Day of the Week")
+        expectDisplayAt("days in february 2028", "29 days")
+        expectDisplayAt("days in april", "30 days")
+        expectDisplayAt("current timestamp", "1,784,852,280")
+        expectDisplayAt("1800000000 to date", "15 January, 2027 at 8:00 AM")
+        expectDisplayAt("1800000000000 to date", "15 January, 2027 at 8:00 AM")
+    }
+
+    // MARK: - Worded questions, word functions and their units
+
+    static func wordingTests() {
+        // Spoken operators and magnitudes
+        expectDisplay("20 percent of 50", "10")
+        expectDisplay("20 per cent of 50", "10")
+        expectDisplay("3 raised to 4", "81")
+        expectDisplay("3 raised to the power of 4", "81")
+        expectDisplay("2 exponent 10", "1,024")
+        expectDisplay("3 to the 4", "81")
+        expectDisplay("56 to the nearest 10", "60")
+        expectDisplay("squared root of 81", "9")
+        expectDisplay("cubed root of 27", "3")
+        expectDisplay("2 trillion", "2,000,000,000,000")
+        expectCopy("1.5 quadrillion", "1500000000000000")
+        expectNil("1 to the moon")
+
+        // A question's lead and question mark ask about what follows them
+        expectDisplay("what is 20% of 50", "10")
+        expectDisplay("20% of 50?", "10")
+        expectDisplay("calculate 2 + 3", "5")
+        expectDisplay("what is 5 km in miles", "3.106855961 mi")
+        expectNil("what is")
+        expectNil("calculate")
+
+        // Conversions asked in words
+        expectDisplay("convert 5 km into miles", "3.106855961 mi")
+        expectDisplay("convert 10 kg to lb", "22.04622622 lb")
+        expectDisplay("convert 100 usd eur", "92.00 EUR")
+        expectNil("convert usd eur")
+        expectDisplay("5 km is what in miles", "3.106855961 mi")
+        expectDisplay("5 km is how many miles", "3.106855961 mi")
+        expectDisplay("how many feet in a mile", "5,280 ft")
+        expectDisplay("how many seconds are in a day", "86,400 s")
+        expectDisplay("seconds in 3 days", "259,200 s")
+        expectDisplay("cm in 5 inches", "12.7 cm")
+        expectBadges("how many feet in a mile", source: "Miles", target: "Feet")
+        expectDisplay("m in ft", "3.280839895 ft")  // a bare unit keeps meaning one of itself
+        expectDisplay("feet in mile", "0.0001893939394 mi")
+        expectDisplay("exchange rate for usd to eur", "0.92 EUR")
+        expectDisplay("rate for eur to usd", "1.09 USD")
+        expectNil("how many")
+        expectNil("convert")
+        expectNil("xyz in a mile")
+        expectNil("rate my app")
+
+        // Spoken math
+        expectDisplay("remainder of 20 divided by 3", "2")
+        expectBadges("remainder of 20 divided by 3", source: "Expression", target: "Remainder")
+        expectDisplay("is 97 prime", "true")
+        expectDisplay("is 91 a prime number", "false")
+        expectDisplay("is prime 2", "true")
+        expectDisplay("is 9007199254740881 prime", "true")
+        expectNil("is 2.5 prime")
+        expectNil("is prime")
+        expectNil("prime video")
+        expectDisplay("clamp 20 between 5 and 15", "15")
+        expectDisplay("clamp 2 from 5 to 15", "5")
+        expectDisplay("clamp 10 5 15", "10")
+        expectDisplay("clamp 30 cm between 1 m and 2 m", "1 m")
+        expectNil("clamp 20 between 15 and 5")
+        expectNil("clamp")
+        expectDisplay("6 is to 600 as what is to 8", "0.08")
+        expectDisplay("6 is to 600 as 8 is to what", "800")
+        expectDisplay("6 to 600 as 8 to what", "800")
+        expectDisplay("2 km is to 4 km as what is to 10 kg", "5 kg")
+        expectDisplay("5 choose 3", "10")
+        expectDisplay("5 permutation 3", "60")
+        expectDisplay("3 combinations of 5", "10")
+        expectDisplay("3 permutations of 5", "60")
+        expectBadges("5 choose 3", source: "Expression", target: "Combinations")
+        expectNil("3 choose 5")
+        expectDisplay("logarithm 81 base 3", "4")
+        expectDisplay("logarithm of 20 to base 4", "2.160964047")
+        expectDisplay("log base 2 of 1024", "10")
+        expectDisplay("1000 is 10 to the power of what", "3")
+        expectDisplay("4 to what power is 64", "3")
+        expectDisplay("5 root of 32", "2")
+        expectDisplay("5 as multiplier of 1", "5x")
+        expectDisplay("5 is what multiplier of 1", "5x")
+        expectDisplay("5 as multiplier on 1", "4x")
+        expectDisplay("5 as multiplier off 10", "0.5x")
+        expectDisplay("10 to 20 as multiplier", "2x")
+        expectNil("10 to 20")
+
+        // Statistics lower to the function call, so lists keep their units
+        expectDisplay("median of 3, 1, 2", "2")
+        expectDisplay("median of 1, 2, 3 and 4", "2.5")
+        expectDisplay("count of 4, 8, 15, 16, 23, 42", "6")
+        expectDisplay("standard deviation of 2, 4, 4, 4, 5, 5, 7, 9", "2.138089935")
+        expectDisplay("std dev of 1, 2", "0.7071067812")
+        expectDisplay("sum of 1 km and 500 m", "1.5 km")
+        expectDisplay("midpoint of 2 and 32", "17")
+        expectDisplay("halfway between 2 and 32", "17")
+        expectDisplay("gcf of 20 and 30", "10")
+        expectDisplay("greatest common divisor of 20 and 30", "10")
+        expectDisplay("lowest common multiple of 4 and 6", "12")
+        expectDisplay("median(1, 5, 2, 8)", "3.5")
+        expectDisplay("median(3 km, 1 km, 2 km)", "2 km")
+        expectBadges("median of 3, 1, 2", source: "Expression", target: "Median")
+        expectNil("median")
+        expectNil("sum of")
+
+        // Percent phrasings
+        expectDisplay("20% from 100", "20")
+        expectDisplay("take 20% off 100", "80")
+        expectDisplay("20% off of 100", "80")
+        expectDisplay("20% discount off $100", "80.00 USD")
+        expectDisplay("20% markup on 50", "60")
+        expectDisplay("15% tip on 42", "6.3")
+        expectDisplay("20% of what is 30", "150")
+        expectDisplay("20% off what is 30", "37.5")
+        expectDisplay("20% on what is 30", "25")
+        expectDisplay("what % is 25 of 100", "25%")
+        expectDisplay("10 is % of 20", "50%")
+        expectDisplay("10 is what % 20", "50%")
+        expectDisplay("10 as % 20", "50%")
+        expectDisplay("10 is what % with 20", "33.33333333%")
+        expectDisplay("10 as discount off 20", "50%")
+        expectDisplay("% change from 10 to 20", "100%")
+        expectDisplay("% increase from 10 to 20", "100%")
+        expectDisplay("% decrease from 20 to 10", "-50%")
+        expectDisplay("what % change is 10 to 20", "100%")
+        expectDisplay("15 as % after adding 3", "25%")
+        expectDisplay("15 is what % after +3", "25%")
+        expectDisplay("if 30 is 20%, what is 50%", "75")
+        expectDisplay("if 30 is 20% what is 60", "40%")
+        expectDisplay("if 20% is 30, what is 50%", "75")
+        expectDisplay("4 out of 10", "40%")
+        expectDisplay("10% tax on 100", "110")
+        expectDisplay("10% tax of 110", "11")
+        expectDisplay("10% tax in 110", "10")
+        expectDisplay("20% vat in 120", "20")
+        expectDisplay("10% sales tax on 100", "110")
+        expectDisplay("$100 + 10% tax", "110.00 USD")
+        expectBadges("20% vat in 120", source: "Expression", target: "Tax")
+
+        // Rounding phrases
+        expectDisplay("round 56.2 up", "57")
+        expectDisplay("round 56.8 down", "56")
+        expectDisplay("round 56 up to nearest 10", "60")
+        expectDisplay("round 51 to next 10", "60")
+        expectDisplay("round 59 down to last 10", "50")
+        expectDisplay("round 56 up to 10", "60")
+        expectDisplay("round 56.789 to 1 digit", "56.8")
+        expectDisplay("round 3.14159 to 2 decimal points", "3.14")
+        expectDisplay("3.3 to nearest quarter", "3.25")
+        expectDisplay("round 3.14159 to nearest 8th", "3.125")
+        expectDisplay("0.75 to fraction", "3/4")
+        expectDisplay("0.375 as frac", "3/8")
+        expectNil("round 56 to 10")  // a bare step needs a direction to be one
+        expectNil("round up")
+
+        // Number forms and radixes
+        expectDisplay("1234567 to sci", "1.234567e6")
+        expectDisplay("0.000123 to scientific notation", "1.23e-4")
+        expectDisplay("-4500 to sci", "-4.5e3")
+        expectCopy("1234567 to sci", "1.234567e6")
+        expectDisplay("51.4772° to dms", "51° 28′ 37.92″")
+        expectDisplay("1 rad to dms", "57° 17′ 44.81″")
+        expectDisplay("5400 seconds to hms", "1h 30m 0s")
+        expectDisplay("1.5e3 to number", "1,500")
+        expectDisplay("2 to multiplier", "2x")
+        expectDisplay("255 to base 7", "513")
+        expectDisplay("35 to base 36", "Z")
+        expectDisplay("255 to base 16", "0xFF")
+        expectBadges("255 to base 7", source: "Decimal", target: "Base 7")
+        expectDisplay("90 min to laptime", "01:30:00")
+        expectDisplay("75.5 seconds to lap time", "00:01:15.5")
+        expectDisplay("440 hz to pitch", "A4")
+        expectDisplay("261.63 hz to pitch", "C4")
+        expectDisplay("1 khz to note", "B5")
+        expectDisplay("c4 to hz", "261.6255653 Hz")
+        expectDisplay("bb3 to hz", "233.0818808 Hz")
+        expectNil("a4 paper")
+
+        // Pixels against physical size
+        expectDisplay("3000 px to inches at 300 ppi", "10 in")
+        expectDisplay("10 cm to px at 300 ppi", "1,181.102362 px")
+        expectDisplay("ppi of 27 inch display at 3840x2160", "163.1783089 ppi")
+        expectDisplay("ppi of 6.1 inch screen at 2532x1170", "457.2543463 ppi")
+        expectNil("10 kg to lb at 300 ppi")
+
+        // Two units of one kind, the larger whole
+        expectDisplay("1.75 m to feet and inches", "5 ft 8.897637795 in")
+        expectDisplay("1.75 m to ft in", "5 ft 8.897637795 in")
+        expectDisplay("2.5 kg to lb & oz", "5 lb 8.184904874 oz")
+        expectDisplay("100 months to years and months", "8 yr 4 mo")
+        expectDisplay("-1.5 ft to ft and in", "-1 ft 6 in")
+        expectBadges("1.75 m to feet and inches", source: "Meters", target: "Feet and Inches")
+        expectNil("5 km to kg and g")
+
+        // Rates kept up, transfers and playback speeds
+        expectDisplay("$50/hr for 3 hours", "150.00 USD")
+        expectDisplay("60 km/h for 30 min", "30 km")
+        expectDisplay("$100,000/year for 3 months", "25,000.00 USD")
+        expectDisplay("download 20 GB at 10 MB/s", "33 min 20 s")
+        expectDisplay("transfer 1 TB at 100 Mbps", "22 hr 13 min 20 s")
+        expectDisplay("1 hour at 2x", "0.5 hr")
+        expectDisplay("90 min at 1.5× speed", "60 min")
+        expectDisplay("time saved 1 hour at 1.5x", "0.3333333333 hr")
+        expectDisplay("$50/hr is what per day", "1,200.00 USD/day")
+        expectDisplay("$50/hr as per week", "8,400.00 USD/week")
+        expectDisplay("60 km/h is how much per minute", "1 km/min")
+        expectNil("10 kg for 3 hours")
+        expectNil("download music")
+        expectNil("1 hour at 2")
+
+        // Growth and finance
+        expectDisplay("present value of $1000 after 5 years at 5%", "783.53 USD")
+        expectDisplay("500 invested 1000 returned", "100%")
+        expectDisplay("annual return on 500 invested 1000 returned after 5 years", "14.8698355%")
+        expectDisplay("annual return on 500 that grew to 1000 over 5 years", "14.8698355%")
+        expectDisplay("investment required for $50000/year at 4%", "1,250,000.00 USD")
+        expectDisplay("total interest on 10000 for 5 years at 6%", "1,599.680918")
+        expectDisplay("monthly interest on 10000 for 5 years at 6%", "26.66134863")
+        expectDisplay("20 after 5 years at 5% every year", "25.52563125")
+        expectDisplay("20 after 5 years at 5% decay every year", "15.47561875")
+        expectDisplay("20 after 10 years at 5% every 2 years", "25.52563125")
+        expectDisplay("time from 20 to 30 at 5% every year", "8.310386223 yr")
+        expectDisplay("time from 20 to 30 at 2 every day", "5 day")
+        expectDisplay("days from 20 to 30 at 2 every week", "35 day")
+        expectDisplay("growth every year from 20 to 30 over 5 years", "8.44717712%")
+        expectNil("100 for 5 years")
+
+        // Ingredients between weight and volume
+        expectDisplay("1 cup of flour in grams", "125 g")
+        expectDisplay("200 g butter in cups", "0.8810572687 cup")
+        expectDisplay("2 tbsp honey to g", "42.375 g")
+        expectDisplay("500 g all purpose flour in cups", "4 cup")
+        expectDisplay("density of honey", "1.432869212 g/cm³")
+        expectDisplay("olive oil density", "0.9129786129 g/cm³")
+        expectBadges("1 cup of flour in grams", source: "Flour", target: "Grams")
+        expectDisplay("1 cup to ml", "236.5882365 mL")
+        expectNil("1 cup of unicorn in grams")
+        expectNil("honey")
+
+        // Counts over a period, on the fixed Friday 24 July 2026
+        expectDisplayAt("days left in the year", "160 days")
+        expectDisplayAt("days left in 2026", "160 days")
+        expectDisplayAt("days remaining in this month", "7 days")
+        expectDisplayAt("hours left in today", "23.7 hours")
+        expectDisplayAt("workdays left in this month", "5 workdays")
+        expectDisplayAt("days in 2028", "366 days")
+        expectDisplayAt("weeks in 2026", "52.14285714 weeks")
+        expectDisplayAt("workdays in march", "22 workdays")
+        expectDisplayAt("days left in 2027", "365 days")
+        expectBadgesAt("days left in 2026", source: "2026", target: "Remaining")
+        expectNilAt("days left in 2025")
+        expectNilAt("days left")
+        expectDisplayAt("week of month", "4")
+        expectDisplayAt("day of the month on dec 25", "25")
+
+        // Spans and named days
+        expectDisplayAt("whole weeks between jan 1 and mar 1", "8 weeks")
+        expectDisplayAt("from jan 1 through jan 31", "31 days")
+        expectDisplayAt("week of year", "30")
+        expectDisplayAt("halfway between jan 1 and mar 1", "31 January")
+        expectDisplayAt("midpoint between jan 1 2026 and dec 31 2026", "2 July")
+        expectDisplayAt("halfway between 9am and 5pm", "24 July at 1:00 PM")
+        expectDisplayAt("previous friday", "17 July")
+        expectDisplayAt("this friday", "24 July")
+        expectDisplayAt("this sunday", "26 July")
+        expectDisplayAt("tomorrow at midday", "25 July at 12:00 PM")
+        expectDisplayAt("5 p.m. + 2 hours", "24 July at 7:00 PM")
+        expectDisplayAt("days until xmas", "154 days")
+        expectDisplayAt("days until nye", "160 days")
+        expectDisplayAt("easter 2027", "28 March, 2027")
+        expectDisplayAt("easter 2038", "25 April, 2038")
+        expectDisplayAt("good friday 2027", "26 March, 2027")
+        expectDisplayAt("easter monday 2027", "29 March, 2027")
+        expectDisplayAt("orthodox easter 2027", "2 May, 2027")
+        expectDisplayAt("chinese new year 2027", "6 February, 2027")
+        expectDisplayAt("ramadan 2027", "8 February, 2027 (±1 day)")
+        expectCopyAt("ramadan 2027", "8 February, 2027")
+        expectDisplayAt("end of ramadan 2027", "8 March, 2027 (±1 day)")
+        expectDisplayAt("eid al-fitr 2027", "9 March, 2027 (±1 day)")
+        expectDisplayAt("eid ul fitr 2027", "9 March, 2027 (±1 day)")
+        expectDisplayAt("eid al-adha 2027", "16 May, 2027 (±1 day)")
+        expectDisplayAt("eid-ul-azha 2027", "16 May, 2027 (±1 day)")
+        expectDisplayAt("eid al-fitr 2033", "3 January, 2033 (±1 day)")
+        expectDisplayAt("days until eid al-adha", "296 days (±1 day)")
+        expectCopyAt("days until eid al-adha", "296 days")
+        expectDisplayAt("weekday on eid al-adha 2027", "Sunday (±1 day)")
+        expectBadgesAt("eid al-adha 2027", source: "Friday, 24 July", target: "Sunday")
+        expectNilAt("eid")  // either Eid could be meant, so neither is guessed
+        expectDisplayAt("hanukkah 2026", "4 December")
+        expectDisplayAt("end of hanukkah 2026", "12 December")
+        expectDisplayAt("days until easter", "247 days")  // computed, not sighted, so no note
+        expectDisplayAt("days until boxing day", "155 days")
+        expectNilAt("easter")  // a holiday alone is an app search, as `christmas` is
+        expectNilAt("easter egg")
+        expectNilAt("good friday")
+        expectDisplayAt("new timestamp", "1,784,852,280")
+        expectDisplayAt("now to iso", "2026-07-24T00:18:00+00:00")
+        expectDisplayAt("today + 3 days to iso8601", "2026-07-27T00:00:00+00:00")
+
+        // Zones asked in words
+        expectDisplayAt("date in tokyo", "Friday, 24 July")
+        expectDisplayAt("tokyo date", "Friday, 24 July")
+        expectDisplayAt("local time in tokyo", "9:18 AM")
+        expectDisplayAt("tokyo local time", "9:18 AM")
+        expectDisplayAt("time now in tokyo", "9:18 AM")
+        expectDisplayAt("time in tokyo now", "9:18 AM")
+        expectDisplayAt("time difference between london and tokyo", "9:18 AM (+8h)")
+        expectDisplayAt("diff london & tokyo", "9:18 AM (+8h)")
+        expectDisplayAt("diff london tokyo", "9:18 AM (+8h)")
+        expectDisplayAt("diff new york and san francisco", "5:18 PM (-3h)")
+        expectDisplayAt("time in tokyo when it's 5pm in london", "1:00 AM (tomorrow)")
+        expectDisplayAt("what time is it in tokyo when it is 9am in new york", "10:00 PM")
+        expectNilAt("local time")
+        expectNilAt("when it's 5pm")
+
+        // Units
+        expectDisplay("1 parsec to light years", "3.261563777 ly")
+        expectDisplay("1 au to km", "149,597,870.7 km")
+        expectDisplay("10 fathoms to m", "18.288 m")
+        expectDisplay("1 furlong to m", "201.168 m")
+        expectDisplay("1 metric cup to ml", "250 mL")
+        expectDisplay("5 microliters to ml", "0.005 mL")
+        expectDisplay("1 cubic mile to cubic km", "4.168181825 km³")
+        expectDisplay("1 barrel to l", "158.9872949 L")
+        expectDisplay("1 imperial tablespoon to ml", "17.75816406 mL")
+        expectDisplay("1 troy ounce to g", "31.1034768 g")
+        expectDisplay("1 carat to g", "0.2 g")
+        expectDisplay("1 twh to gwh", "1,000 GWh")
+        expectDisplay("1 ksi to psi", "1,000 psi")
+        expectDisplay("100 rpm to rad/s", "10.47197551 rad/s")
+        expectDisplay("1 farad to microfarads", "1,000,000 µF")
+        expectDisplay("1 tesla to gauss", "10,000 G")
+        expectDisplay("10 newton meters to pound feet", "7.375621493 lb·ft")
+        expectDisplay("2 mol + 500 mmol", "2,500 mmol")
+        expectDisplay("12 V * 2 s", "24 Wb")
+        expectDisplay("1 microfarad * 1 kiloohm", "0.001 s")
+        expectDisplay("1 exabyte to petabytes", "1,000 PB")
+        expectError("10 Nm to J", "Cannot convert Torque to Energy.")
+        // Bare symbols keep their older meanings: Fahrenheit, hours, nanometers, pounds in kilograms
+        expectDisplay("100 F to C", "37.77777778 °C")
+        expectDisplay("5 H to hours", "5 hr")
+        expectDisplay("10 nm to m", "1e-08 m")
+        expectDisplay("5 lb in kg", "2.26796185 kg")
     }
 
     // MARK: - Locale-aware input and output
@@ -1515,7 +2328,6 @@ struct CalcTests {
     static let ungrouped = CalcNumberFormat(decimalSeparator: ",", groupingSeparator: nil)!
 
     static func localeTests() {
-        // Resolving a format from the Mac's separators
         check(
             "format [en separators]", expected: "true",
             got: "\(CalcNumberFormat(decimalSeparator: ".", groupingSeparator: ",") == .english)")
@@ -1535,14 +2347,12 @@ struct CalcTests {
         check("format [it argument separator]", expected: ";", got: String(italian.argumentSeparator))
         check("format [ch argument separator]", expected: ",", got: String(swiss.argumentSeparator))
 
-        // The issue's own examples
         expectLocalized("2,3 + 1,5", "3,8", italian)
         expectLocalized("1.234,56 + 0,44", "1.235", italian)
         expectLocalized("10/4", "2,5", italian)
         expectLocalizedCopy("1.234,56 + 0,44", "1235", italian)
         expectLocalizedCopy("10/4", "2,5", italian)
 
-        // Decimal comma, dot grouping
         expectLocalized("2^20", "1.048.576", italian)
         expectLocalized("1.000.000 / 3", "333.333,3333", italian)
         expectLocalized("1/3", "0,3333333333", italian)
@@ -1605,7 +2415,8 @@ struct CalcTests {
         // Dates, clocks and zones never reach the number rewrite
         for query in [
             "17.2.26 + 100 weekdays", "25.8.27", "25. aug", "25. aug + 3",
-            "time in Tokyo", "1970-01-01T00:00:00.125Z to unix ms", "1.2.3 + 1", "7:30 - 13:30"
+            "time in Tokyo", "1970-01-01T00:00:00.125Z to unix ms", "1.2.3 + 1", "7:30 - 13:30",
+            "days until 29.10", "days since 20.7."
         ] {
             expectSameAsEnglish(query, italian)
         }
@@ -1636,7 +2447,6 @@ struct CalcTests {
         expectLocalized("max(2,3)", "3", .english)
         expectLocalizedNil("max(2;3)", .english)
 
-        // Canonical history text, localized for display
         check("history [grouped]", expected: "1.234,5 kg", got: italian.localized("1,234.5 kg"))
         check("history [dotted date]", expected: "19.2.27", got: italian.localized("19.2.27"))
         check("history [clock]", expected: "00:18:00.123", got: italian.localized("00:18:00.123"))
@@ -1665,6 +2475,33 @@ struct CalcTests {
         check("history [exponent]", expected: "1,524157875e+16", got: italian.localized("1.524157875e+16"))
         check("history [english]", expected: "1,234.5", got: CalcNumberFormat.english.localized("1,234.5"))
         check("history [search]", expected: "3.8", got: italian.canonical("3,8") ?? "nil")
+    }
+
+    static func chainTests() {
+        for query in [
+            "2^10", "1/3", "100 usd to eur", "10 km to mi", "1m", "255 to hex", "145 mins to timespan",
+            "20% off 500", "2^10 +"
+        ] {
+            check(query + " [chains]", expected: "true", got: chains(evaluate(query)))
+        }
+        for query in [
+            "now + 90 min", "now + 90 min +", "today", "time", "time in Tokyo", "3pm London in Tokyo",
+            "5 > 3",
+            "ratio of 1920 to 1080"
+        ] {
+            check(query + " [chains]", expected: "false", got: chains(evaluate(query)))
+        }
+        check(
+            "now + 90 min [chains, localized]", expected: "false",
+            got: chains(evaluateLocalized("now + 90 min", italian)))
+    }
+
+    static func evaluate(_ query: String) -> CalcResult? {
+        CalcEngine.evaluate(query, now: clock.now, calendar: clock.calendar, rates: fx)
+    }
+
+    static func chains(_ result: CalcResult?) -> String {
+        result.map { "\($0.canChain)" } ?? "nil"
     }
 
     static func evaluateLocalized(_ query: String, _ format: CalcNumberFormat) -> CalcResult? {
@@ -1743,6 +2580,7 @@ struct CalcTests {
         rates: [
             "USD": 1, "EUR": 0.92, "GBP": 0.79, "JPY": 157, "INR": 83.5, "CAD": 1.36,
             "KRW": 1330, "IDR": 18053, "CHF": 0.81, "AED": 3.6725, "SGD": 1.35,
+            "XOF": 603.48, "XRP": 2,
             "BTC": 1.0 / 60_000, "ETH": 1.0 / 2_000, "SOL": 1.0 / 100, "DOGE": 10
         ],
         fetchedAt: Date(timeIntervalSince1970: 1_785_000_000))
@@ -1766,6 +2604,17 @@ struct CalcTests {
             return
         }
         check(query, expected: expected, got: display)
+    }
+
+    static func expectCopyAt(_ query: String, _ expected: String, calendar: Calendar? = nil) {
+        guard
+            case .value(_, let copy)? = CalcEngine.evaluate(
+                query, now: clock.now, calendar: calendar ?? clock.calendar)?.payload
+        else {
+            fail(query, expected: expected, got: "nil / error")
+            return
+        }
+        check(query + " [copy]", expected: expected, got: copy)
     }
 
     static func expectBadgesAt(
@@ -1868,7 +2717,6 @@ struct CalcTests {
         check(label(query, region), expected: expected, got: result.expression)
     }
 
-    /// `CurrencyFeed` is handed the two payloads exactly as the store receives them.
     static func expectSnapshot(_ name: String, fiat: Data, crypto: Data?, expected: String) {
         guard let result = try? CurrencyFeed.snapshot(fiat: fiat, crypto: crypto, now: clock.now)
         else {

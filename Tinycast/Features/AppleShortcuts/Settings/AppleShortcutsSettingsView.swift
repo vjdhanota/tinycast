@@ -1,6 +1,5 @@
 import SwiftUI
 
-/// The shortcuts found in the Shortcuts app, each with the launcher controls any item carries.
 struct AppleShortcutsSettingsView: View {
     @Environment(AppCore.self) private var core
     @Environment(AppSettings.self) private var settings
@@ -20,12 +19,13 @@ struct AppleShortcutsSettingsView: View {
         return Form {
             Section {
                 Toggle(isOn: $settings.appleShortcutsEnabled) {
-                    SettingsRowTitle(.appleShortcutsAppleShortcuts, "Enable Apple Shortcuts")
-                    Text("Run your shortcuts from the launcher.")
+                    SettingsFeatureToggleLabel(
+                        anchor: .appleShortcutsAppleShortcuts,
+                        title: "Enable Apple Shortcuts",
+                        subtitle: "Run your shortcuts from the launcher.")
                 }
-            } header: {
-                SettingsSectionHeader(.appleShortcutsAppleShortcuts)
             }
+            .settingsAnchor(.appleShortcutsAppleShortcuts)
 
             if settings.appleShortcutsEnabled {
                 library
@@ -41,7 +41,10 @@ struct AppleShortcutsSettingsView: View {
     private var library: some View {
         Section {
             SettingsFilterField(prompt: "Search shortcuts…", query: $query)
-            LauncherItemsList(entries: entries, query: query, isEnabled: true)
+            LauncherItemsList(
+                entries: entries, query: query, isEnabled: true,
+                emptyMessage: LocalizedStringResource(
+                    "apple-shortcuts-empty", defaultValue: "Nothing here yet."))
             Button("Open Shortcuts") { core.appleShortcutCoordinator.openShortcutsApp() }
         } header: {
             SettingsSectionHeader(.appleShortcutsShortcuts)

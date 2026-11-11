@@ -36,7 +36,8 @@ final class MCPStdioTransport: MCPTransport {
     func connect() async throws {
         if isRunning { return }
         guard let executable = await ExecutableLocator.locate(command) else {
-            throw MCPTransportError.launchFailed("`\(command)` was not found on this Mac.")
+            throw MCPTransportError.launchFailed(
+                String(localized: "`\(command)` was not found on this Mac."))
         }
         // A second caller may have started it during the lookup.
         if isRunning { return }
@@ -47,7 +48,7 @@ final class MCPStdioTransport: MCPTransport {
         process.executableURL = executable
         process.arguments = arguments
         process.currentDirectoryURL = FileManager.default.homeDirectoryForCurrentUser
-        process.environment = Self.launchEnvironment(executable: executable, adding: environment)
+        process.environment = ExecutableLocator.environment(running: executable, adding: environment)
         process.standardInput = stdin
         process.standardOutput = stdout
         process.standardError = stderr
@@ -73,6 +74,8 @@ final class MCPStdioTransport: MCPTransport {
             throw MCPTransportError.launchFailed(error.localizedDescription)
         }
         self.process = process
+        // A server that dies mid-write must fail the write, not SIGPIPE Tinycast.
+        _ = fcntl(stdin.fileHandleForWriting.fileDescriptor, F_SETNOSIGPIPE, 1)
         input = stdin.fileHandleForWriting
     }
 
@@ -121,20 +124,6 @@ final class MCPStdioTransport: MCPTransport {
         }
     }
 
-    /// A GUI app inherits Finder's PATH, so the server's own toolchain has to be put back on it.
-    private static func launchEnvironment(
-        executable: URL, adding environment: [String: String]
-    ) -> [String: String] {
-        let inherited = ProcessInfo.processInfo.environment
-        let paths =
-            [executable.deletingLastPathComponent().path, "/opt/homebrew/bin", "/usr/local/bin"]
-            + [inherited["PATH"] ?? "/usr/bin:/bin"]
-        return
-            inherited
-            .merging(environment) { _, server in server }
-            .merging(["NO_COLOR": "1", "PATH": paths.joined(separator: ":")]) { _, new in new }
-    }
-
     private func send(_ data: Data) throws {
         guard let input else { throw MCPTransportError.notRunning }
         try input.write(contentsOf: data)
@@ -149,7 +138,8 @@ final class MCPStdioTransport: MCPTransport {
             handle(MCPProtocol.parse(Data(line)))
         }
         guard outputBuffer.count > Self.outputLimit else { return }
-        let message = "The server sent an unterminated oversized response and was disconnected."
+        let message = String(
+            localized: "The server sent an unterminated oversized response and was disconnected.")
         onExit?(message)
         stop(error: MCPTransportError.requestFailed(message))
     }
@@ -193,7 +183,8 @@ final class MCPStdioTransport: MCPTransport {
         drainStderr()
         let detail = String(decoding: stderrBuffer, as: UTF8.self)
             .trimmingCharacters(in: .whitespacesAndNewlines)
-        let message = detail.isEmpty ? "The server exited with status \(status)." : detail
+        let message =
+            detail.isEmpty ? String(localized: "The server exited with status \(status).") : detail
         // Pending calls are failed before the owner hears, or closing would overwrite the reason.
         cleanup(error: MCPTransportError.requestFailed(message))
         onExit?(message)

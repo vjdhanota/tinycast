@@ -1,16 +1,16 @@
 import SwiftUI
 
-/// Local conversations: search summaries, preview one, then explicitly open it as the active chat.
+/// Local conversations: search summaries, preview one, then explicitly open it in Quick AI.
 struct ChatHistoryScreen: PaletteScreen {
     let history: ChatHistoryStore
     let chat: AIChatState
-    let coordinator: AIChatCoordinator
+    let coordinator: QuickAICoordinator
     let vm: PaletteState
     let openActions: () -> Void
     let metrics: InterfaceMetrics
 
     var rows: [ChatConversation] { history.search(vm.query) }
-    let primaryActionTitle = "Open Chat"
+    let primaryActionTitle = String(localized: "Open Chat")
 
     private func conversation(at selection: Int) -> ChatConversation? {
         let rows = rows
@@ -38,6 +38,10 @@ struct ChatHistoryScreen: PaletteScreen {
         case .deleteAll:
             deleteAll()
             return true
+        case .continueInChat:
+            guard let conversation = conversation(at: selection) else { return false }
+            coordinator.continueInChat(id: conversation.id)
+            return true
         default: return false
         }
     }
@@ -61,8 +65,9 @@ struct ChatHistoryScreen: PaletteScreen {
         if rows.isEmpty {
             EmptyResults(
                 text: history.isAvailable
-                    ? history.conversations.isEmpty ? "No chats yet" : "No matching chats"
-                    : "Chat history is unavailable")
+                    ? history.conversations.isEmpty
+                        ? String(localized: "No chats yet") : String(localized: "No matching chats")
+                    : String(localized: "Chat history is unavailable"))
         } else {
             let selected = conversation(at: selection)
             HStack(spacing: 0) {
@@ -79,7 +84,9 @@ struct ChatHistoryScreen: PaletteScreen {
                 )
                 .frame(width: metrics.size.clipboardListWidth)
                 Rectangle().fill(Theme.Colors.separator).frame(width: Theme.Size.hairline)
-                ChatHistoryPreview(history: history, chat: chat, conversationID: selected?.id)
+                ChatHistoryPreview(
+                    history: history, chat: chat, settings: coordinator.aiSettings,
+                    conversationID: selected?.id)
             }
         }
     }
@@ -88,24 +95,32 @@ struct ChatHistoryScreen: PaletteScreen {
 @MainActor
 enum ChatHistoryActionsMenu {
     static func content(
-        conversation: ChatConversation, coordinator: AIChatCoordinator
+        conversation: ChatConversation, coordinator: QuickAICoordinator
     ) -> PopoverMenuContent {
         PopoverMenuContent(
-            header: conversation.title,
+            header: conversation.displayTitle,
             items: [
                 PopoverMenuItem(
-                    title: "Open Chat", systemImage: "bubble.left.and.bubble.right", shortcut: "↵"
+                    title: String(localized: "Open Chat"), systemImage: "sparkles", shortcut: "↵"
                 ) {
                     coordinator.openChat(id: conversation.id)
                 },
                 PopoverMenuItem(
-                    title: "Delete Chat", systemImage: "trash", startsSection: true, shortcut: "⌃X",
+                    title: String(localized: "Continue in AI Chat"),
+                    systemImage: "bubble.left.and.bubble.right",
+                    shortcut: "⌘J"
+                ) {
+                    coordinator.continueInChat(id: conversation.id)
+                },
+                PopoverMenuItem(
+                    title: String(localized: "Delete Chat"), systemImage: "trash", startsSection: true,
+                    shortcut: "⌃X",
                     isDestructive: true
                 ) {
                     coordinator.deleteChat(id: conversation.id)
                 },
                 PopoverMenuItem(
-                    title: "Delete All Chats", systemImage: "trash", shortcut: "⌃⇧X",
+                    title: String(localized: "Delete All Chats"), systemImage: "trash", shortcut: "⌃⇧X",
                     isDestructive: true
                 ) {
                     Task { await coordinator.deleteAllChats() }

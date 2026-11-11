@@ -8,12 +8,16 @@ final class MCPHTTPTransport: MCPTransport {
     private let endpoint: URL
     private let headerName: String
     private let headerValue: String
+    private let authorization: ((String?) async throws -> String)?
     private var sessionID: String?
     private var protocolVersion = MCPProtocol.version
     private var nextID = 1
     private var isConnected = false
 
-    init(url: String, headerName: String, headerValue: String) throws {
+    init(
+        url: String, headerName: String, headerValue: String,
+        authorization: ((String?) async throws -> String)? = nil
+    ) throws {
         do {
             endpoint = try AIEndpointPolicy.validate(url)
         } catch {
@@ -21,6 +25,7 @@ final class MCPHTTPTransport: MCPTransport {
         }
         self.headerName = headerName.trimmingCharacters(in: .whitespaces)
         self.headerValue = headerValue
+        self.authorization = authorization
     }
 
     func connect() async throws {
@@ -71,15 +76,26 @@ final class MCPHTTPTransport: MCPTransport {
         request.setValue("application/json, text/event-stream", forHTTPHeaderField: "Accept")
         request.setValue(protocolVersion, forHTTPHeaderField: "MCP-Protocol-Version")
         if let sessionID { request.setValue(sessionID, forHTTPHeaderField: "Mcp-Session-Id") }
-        if !headerName.isEmpty, !headerValue.isEmpty {
+        let token = try await authorization?(nil)
+        if let token {
+            request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        } else if !headerName.isEmpty, !headerValue.isEmpty {
             request.setValue(headerValue, forHTTPHeaderField: headerName)
         }
-        let session = Self.makeSession()
+        let session = MCPOAuthHTTP.session(followsSameOrigin: true)
         defer { session.invalidateAndCancel() }
         do {
             let (data, response) = try await session.data(for: request)
             guard let response = response as? HTTPURLResponse else {
                 throw MCPTransportError.malformedResponse
+            }
+            if response.statusCode == 401, let authorization, let token {
+                let refreshed = try await authorization(token)
+                request.setValue("Bearer \(refreshed)", forHTTPHeaderField: "Authorization")
+                let (retried, reply) = try await session.data(for: request)
+                guard let reply = reply as? HTTPURLResponse else { throw MCPTransportError.malformedResponse }
+                if reply.statusCode == 401 { throw MCPOAuth.Failure.signInRequired }
+                return (retried, reply)
             }
             return (data, response)
         } catch let error as URLError {
@@ -91,14 +107,15 @@ final class MCPHTTPTransport: MCPTransport {
         switch response.statusCode {
         case 200...299: return
         case 401, 403:
-            throw MCPTransportError.requestFailed("The server rejected Tinycast's credentials.")
+            throw MCPTransportError.requestFailed(
+                String(localized: "The server rejected Tinycast's credentials."))
         // A dropped session is the server's to end; the next request opens a fresh one.
         case 404 where sessionID != nil:
             sessionID = nil
-            throw MCPTransportError.requestFailed("The server ended the session.")
+            throw MCPTransportError.requestFailed(String(localized: "The server ended the session."))
         default:
             throw MCPTransportError.requestFailed(
-                "The server answered HTTP \(response.statusCode).")
+                String(localized: "The server answered HTTP \(response.statusCode)."))
         }
     }
 
@@ -109,20 +126,13 @@ final class MCPHTTPTransport: MCPTransport {
         return (parser.feed(data) + parser.finish()).map { MCPProtocol.parse(Data($0.utf8)) }
     }
 
-    private static func makeSession() -> URLSession {
-        let configuration = URLSessionConfiguration.ephemeral
-        configuration.urlCache = nil
-        configuration.requestCachePolicy = .reloadIgnoringLocalAndRemoteCacheData
-        return URLSession(configuration: configuration)
-    }
-
     private static func networkMessage(_ code: URLError.Code) -> String {
         switch code {
-        case .notConnectedToInternet: return "No internet connection."
-        case .timedOut: return "The server took too long to respond."
+        case .notConnectedToInternet: return String(localized: "No internet connection.")
+        case .timedOut: return String(localized: "The server took too long to respond.")
         case .cannotFindHost, .cannotConnectToHost, .dnsLookupFailed:
-            return "The server could not be reached."
-        default: return "The request to the server failed."
+            return String(localized: "The server could not be reached.")
+        default: return String(localized: "The request to the server failed.")
         }
     }
 }

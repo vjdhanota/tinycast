@@ -1,4 +1,3 @@
-// Standalone test for the emoji catalog and grid geometry, compiling the real sources.
 import Foundation
 
 @main
@@ -14,7 +13,6 @@ struct EmojiTests {
     }
 
     static func main() {
-        // Dataset + parser
         let entries = EmojiCatalog.parse(EmojiData.raw)
         expect(entries.count > 1900, "dataset has \(entries.count) records (want > 1900)")
         expect(Set(entries.map(\.glyph)).count == entries.count, "glyphs are unique")
@@ -61,7 +59,50 @@ struct EmojiTests {
             EmojiGridColumns.nine.applying(.actualSize, default: .nine) == nil,
             "actual size at the default changes nothing")
 
-        // Skin tone application
+        // Keyword packs join after English, in preference order, and skip blank keyword fields.
+        let merged = EmojiCatalog.parse(
+            "A|alpha|ob|0|red\nB|beta|ob|0|", localized: ["A|rouge,vif\nbad line\nB|bleu", "A|rot"])
+        expect(merged.map(\.keywords) == ["red,rouge,vif,rot", "bleu"], "packs append keywords")
+
+        let packDirectory = URL(fileURLWithPath: "Tinycast/Resources/EmojiKeywords")
+        let packs =
+            (try? FileManager.default.contentsOfDirectory(
+                at: packDirectory, includingPropertiesForKeys: nil)) ?? []
+        let available = packs.map { $0.deletingPathExtension().lastPathComponent }
+        expect(
+            Set(available) == ["de", "es", "fr", "ja", "ko", "pt", "ru", "zh-Hans"],
+            "keyword packs ship for the supported languages")
+        let glyphs = Set(entries.map(\.glyph))
+        for pack in packs {
+            let lines = ((try? String(contentsOf: pack, encoding: .utf8)) ?? "").split(separator: "\n")
+            let name = pack.deletingPathExtension().lastPathComponent
+            expect(
+                lines.count > 1500
+                    && lines.allSatisfy {
+                        let fields = $0.split(separator: "|", omittingEmptySubsequences: false)
+                        return fields.count == 2 && glyphs.contains(String(fields[0]))
+                            && !fields[1].isEmpty
+                    },
+                "\(name) pack is well-formed and keyed by catalog glyphs")
+            expect(
+                EmojiCatalog.keywordLanguages(available: available, preferred: [name]) == [name],
+                "\(name) pack is reachable by its own language")
+        }
+
+        for (preferred, expected) in [
+            (["en-US"], []),
+            (["en-GB", "fr-CA"], ["fr"]),
+            (["fr-FR", "de-DE", "fr-CA"], ["fr", "de"]),
+            (["zh-CN"], ["zh-Hans"]),
+            (["zh-Hans-CN", "zh-SG"], ["zh-Hans"]),
+            (["pt-PT"], ["pt"]),
+            (["sr-Latn-RS"], [])
+        ] {
+            expect(
+                EmojiCatalog.keywordLanguages(available: available, preferred: preferred) == expected,
+                "\(preferred) reads the \(expected) packs")
+        }
+
         expect(EmojiCatalog.applyTone(.dark, to: "👋") == "👋🏿", "modifier appended")
         let victory = entries.first { $0.name == "victory hand" }!
         expect(victory.glyph.unicodeScalars.contains { $0.value == 0xFE0F }, "✌️ base carries VS16")
@@ -75,7 +116,6 @@ struct EmojiTests {
             holdingHands!.display(tone: .dark) == holdingHands!.glyph,
             "tone ignored on non-capable entries")
 
-        // Grid geometry (8 columns): sections of 16, 10, 3 cells
         let g = EmojiGridGeometry(counts: [16, 10, 3], columns: 8)
         expect(g.down(from: 0) == 8, "down within a full section keeps the column")
         expect(g.up(from: 8) == 0, "up within a full section keeps the column")
@@ -105,6 +145,22 @@ struct EmojiTests {
         expect(
             EmojiGridGeometry.selectionAfterRemovingPin(at: 0, remainingCount: 0) == 0,
             "unpinning the only pin leaves a safe empty selection")
+
+        let history = ["a", "b", "x", "d"]
+        expect(
+            EmojiGridGeometry.selection(
+                3, afterSectionAt: 1, changesFrom: history, to: ["x", "a", "b", "d"]) == 1,
+            "a used emoji takes the selection with it to the front")
+        expect(
+            EmojiGridGeometry.selection(6, afterSectionAt: 1, changesFrom: history, to: ["n"] + history)
+                == 7,
+            "a growing section shifts the cells after it")
+        expect(
+            EmojiGridGeometry.selection(4, afterSectionAt: 1, changesFrom: history, to: ["a", "b"]) == 2,
+            "a shrinking section clamps a dropped glyph to its last cell")
+        expect(
+            EmojiGridGeometry.selection(0, afterSectionAt: 1, changesFrom: history, to: []) == 0,
+            "cells before the section keep their index")
 
         let sixColumns = EmojiGridGeometry(counts: [12, 8], columns: 6)
         expect(sixColumns.down(from: 2) == 8, "six-column navigation keeps its visual column")

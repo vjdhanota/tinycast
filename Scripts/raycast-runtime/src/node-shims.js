@@ -25,6 +25,22 @@ import { punycode } from "./punycode.js";
 import { upgradeToWebSocket } from "./websocket.js";
 import { dgram } from "./dgram.js";
 
+// ─── Unsupported-module exports ─────────────────────────────────────
+
+/// Node's function exports per module: a lazy member survives `__toESM` only as an own key.
+const UNSUPPORTED_EXPORTS = {
+  net: ["BlockList", "SocketAddress", "connect", "createConnection", "createServer", "isIP", "isIPv4", "isIPv6", "Server", "Socket", "Stream"],
+  tls: ["getCiphers", "checkServerIdentity", "convertALPNProtocols", "createSecureContext", "SecureContext", "TLSSocket", "Server", "createServer", "connect"],
+  dns: ["lookup", "lookupService", "Resolver", "getServers", "setServers", "getDefaultResultOrder", "setDefaultResultOrder", "resolve", "resolve4", "resolve6", "resolveAny", "resolveCaa", "resolveCname", "resolveMx", "resolveNaptr", "resolveNs", "resolvePtr", "resolveSoa", "resolveSrv", "resolveTlsa", "resolveTxt", "reverse"],
+  vm: ["Script", "createContext", "createScript", "runInContext", "runInNewContext", "runInThisContext", "isContext", "compileFunction", "measureMemory"],
+  readline: ["Interface", "clearLine", "clearScreenDown", "createInterface", "cursorTo", "emitKeypressEvents", "moveCursor"],
+  worker_threads: ["MessagePort", "MessageChannel", "markAsUncloneable", "markAsUntransferable", "isMarkedAsUntransferable", "moveMessagePortToContext", "receiveMessageOnPort", "postMessageToThread", "Worker", "BroadcastChannel", "setEnvironmentData", "getEnvironmentData"],
+  http2: ["connect", "createServer", "createSecureServer", "getDefaultSettings", "getPackedSettings", "getUnpackedSettings", "performServerHandshake", "Http2ServerRequest", "Http2ServerResponse"],
+  domain: ["Domain", "createDomain", "create"],
+  diagnostics_channel: ["channel", "hasSubscribers", "subscribe", "unsubscribe", "tracingChannel", "Channel"],
+  "stream/consumers": ["arrayBuffer", "blob", "buffer", "text", "json"],
+};
+
 // ─── path ───────────────────────────────────────────────────────────
 
 function normalizeSegments(parts, allowAboveRoot) {
@@ -118,7 +134,7 @@ path.win32 = path;
 
 // ─── process ────────────────────────────────────────────────────────
 
-let bootEnvironment = { platform: "darwin", arch: "arm64", env: {}, cwd: "/", homedir: "/", tmpdir: "/tmp", execPath: "" };
+let bootEnvironment = { platform: "darwin", arch: "arm64", env: {}, cwd: "/", homedir: "/", tmpdir: "/tmp", execPath: "", groups: [] };
 
 export function configureNodeShims(info) {
   bootEnvironment = { ...bootEnvironment, ...info };
@@ -163,6 +179,11 @@ const process = {
   stderr: { write: (text) => console.error(String(text).replace(/\n$/, "")), isTTY: false, columns: 80 },
   stdin: { on: () => {}, resume: () => {}, pause: () => {}, isTTY: false },
   cwd: () => bootEnvironment.cwd,
+  getuid: () => bootEnvironment.uid,
+  getgid: () => bootEnvironment.gid,
+  geteuid: () => bootEnvironment.euid,
+  getegid: () => bootEnvironment.egid,
+  getgroups: () => [...bootEnvironment.groups],
   chdir: () => {
     throw new Error("process.chdir is not supported in Tinycast extensions.");
   },
@@ -235,6 +256,15 @@ const process = {
 
 // ─── os ─────────────────────────────────────────────────────────────
 
+/// The host sends a flat list because a JSON object would lose Node's interface order.
+function networkInterfaces() {
+  const interfaces = {};
+  for (const { name, ...address } of hostCallSync("os", "networkInterfaces", [])) {
+    (interfaces[name] ??= []).push(address);
+  }
+  return interfaces;
+}
+
 const os = {
   EOL: "\n",
   platform: () => "darwin",
@@ -248,15 +278,15 @@ const os = {
     username: bootEnvironment.username || "",
     homedir: bootEnvironment.homedir,
     shell: bootEnvironment.shell || "/bin/zsh",
-    uid: 501,
-    gid: 20,
+    uid: bootEnvironment.uid,
+    gid: bootEnvironment.gid,
   }),
   cpus: () => hostCallSync("os", "cpus", []),
   totalmem: () => bootEnvironment.totalmem || 0,
   freemem: () => hostCallSync("os", "freemem", []),
   uptime: () => hostCallSync("os", "uptime", []),
   loadavg: () => hostCallSync("os", "loadavg", []),
-  networkInterfaces: () => ({}),
+  networkInterfaces,
   endianness: () => "LE",
   devNull: "/dev/null",
   constants: { signals: SIGNALS, errno: {} },
@@ -450,7 +480,16 @@ const fs = {
   chmodSync(file, mode) {
     hostCallSync("fs", "chmod", [fsPath(file), fsMode(mode)]);
   },
-  utimesSync() {},
+  utimesSync(file, atime, mtime) {
+    const times = [atime, mtime].map((time) => {
+      const seconds = time instanceof Date ? time.getTime() / 1000 : Number(time);
+      if (!Number.isFinite(seconds)) {
+        throw Object.assign(new TypeError("Invalid file timestamp"), { code: "ERR_INVALID_ARG_VALUE" });
+      }
+      return typeof time === "number" && seconds < 0 ? Date.now() / 1000 : seconds;
+    });
+    hostCallSync("fs", "utimes", [fsPath(file), ...times]);
+  },
   futimesSync() {},
   watch() {
     throw new Error("fs.watch is not supported in Tinycast extensions.");
@@ -575,6 +614,7 @@ for (const [name, sync] of [
   ["open", fs.openSync],
   ["close", fs.closeSync],
   ["futimes", fs.futimesSync],
+  ["utimes", fs.utimesSync],
   ["readFile", fs.readFileSync],
   ["writeFile", fs.writeFileSync],
   ["appendFile", fs.appendFileSync],
@@ -625,6 +665,7 @@ const fsPromises = {
   access: promisify1(fs.accessSync),
   mkdtemp: promisify1(fs.mkdtempSync),
   chmod: promisify1(fs.chmodSync),
+  utimes: promisify1(fs.utimesSync),
   constants: fs.constants,
 };
 fs.promises = fsPromises;
@@ -682,7 +723,7 @@ const childProcess = {
       args = [];
     }
     const raw = hostCallSync("proc", "run", [
-      { shell: !!options.shell, command: String(file), args: args.map(String), cwd: options.cwd, env: childEnv(options.env), timeout: options.timeout, input: options.input ? bytesToBase64(Buffer.from(options.input)) : null },
+      { shell: !!options.shell, command: String(file), args: args.map(String), cwd: options.cwd, env: childEnv(options.env), timeout: options.timeout, input: options.input ? bytesToBase64(Buffer.from(options.input)) : null, stdio: stdioDescriptors(options.stdio) },
     ]);
     const result = normalizeExecResult(raw, options);
     return { ...result, pid: 0, output: [null, result.stdout, result.stderr], error: undefined };
@@ -711,16 +752,12 @@ const childProcess = {
       file,
     );
   },
-  /// A buffered `spawn`: the child runs to completion and its output is then emitted as one `data`
-  /// event. That covers the write-query-then-read-all pattern (`@raycast/utils`' `useSQL` spawns
-  /// `sqlite3` exactly this way), which is what extensions actually do with it — true streaming would
-  /// need a duplex channel across the bridge.
   spawn(file, args = [], options = {}) {
     if (!Array.isArray(args)) {
       options = args;
       args = [];
     }
-    return new BufferedChildProcess(String(file), args.map(String), options);
+    return new ChildProcess(String(file), args.map(String), options);
   },
   fork() {
     throw new Error("child_process.fork is not supported in Tinycast extensions.");
@@ -762,11 +799,25 @@ class Hash {
   }
 }
 
+// CryptoKit seals and opens only full 16-byte tags, and takes no nonce shorter than 96 bits.
+const GCM_TAG_LENGTH = 16;
+const GCM_MIN_IV_LENGTH = 12;
+const GCM_AUTHENTICATION_FAILURE = "Unsupported state or unable to authenticate data";
+
+function hasValidIvLength(mode, length) {
+  if (mode === "gcm") return length >= GCM_MIN_IV_LENGTH;
+  return length === (mode === "cbc" ? 16 : 0);
+}
+
+function invalidAuthTagLength(length) {
+  return cryptoError(`Invalid authentication tag length: ${length}`, "ERR_CRYPTO_INVALID_AUTH_TAG", TypeError);
+}
+
 // Buffers until `final`: a block cipher's concatenated output still matches Node's byte for byte.
 class Cipher {
-  constructor(algorithm, key, iv, decrypt) {
+  constructor(algorithm, key, iv, options, decrypt) {
     const name = String(algorithm).toLowerCase().replace(/^aes(128|192|256)$/, "aes-$1-cbc");
-    const match = /^aes-(128|192|256)-(cbc|ecb)$/.exec(name);
+    const match = /^aes-(128|192|256)-(cbc|ecb|gcm)$/.exec(name);
     if (!match) throw cryptoError("Unknown cipher", "ERR_CRYPTO_UNKNOWN_CIPHER");
     this._mode = match[2];
     this._key = cryptoBytes(key);
@@ -774,11 +825,15 @@ class Cipher {
     if (this._key.length !== Number(match[1]) / 8) {
       throw cryptoError("Invalid key length", "ERR_CRYPTO_INVALID_KEYLEN", RangeError);
     }
-    if (this._iv.length !== (this._mode === "cbc" ? 16 : 0)) {
+    if (!hasValidIvLength(this._mode, this._iv.length)) {
       throw cryptoError("Invalid initialization vector", "ERR_CRYPTO_INVALID_IV", TypeError);
     }
+    const tagLength = options?.authTagLength ?? GCM_TAG_LENGTH;
+    if (this._mode === "gcm" && tagLength !== GCM_TAG_LENGTH) throw invalidAuthTagLength(tagLength);
     this._decrypt = decrypt;
     this._padding = true;
+    this._aad = [];
+    this._authTag = null;
     this._chunks = [];
     this._finished = false;
   }
@@ -790,6 +845,10 @@ class Cipher {
   final(outputEncoding) {
     if (this._finished) throw cryptoError("Invalid state", "ERR_CRYPTO_INVALID_STATE");
     this._finished = true;
+    const bytes = this._mode === "gcm" ? this._finalGcm() : this._finalBlock();
+    return outputEncoding ? bytes.toString(outputEncoding) : bytes;
+  }
+  _finalBlock() {
     const base64 = hostCallSync("crypto", "cipher", [
       this._mode,
       this._decrypt,
@@ -798,12 +857,43 @@ class Cipher {
       bytesToBase64(Buffer.concat(this._chunks)),
       this._padding,
     ]);
-    const bytes = Buffer.from(base64ToBytes(base64));
-    return outputEncoding ? bytes.toString(outputEncoding) : bytes;
+    return Buffer.from(base64ToBytes(base64));
+  }
+  _finalGcm() {
+    const parts = [this._key, this._iv, Buffer.concat(this._chunks), Buffer.concat(this._aad)];
+    const args = parts.map((bytes) => bytesToBase64(bytes));
+    if (!this._decrypt) {
+      const sealed = hostCallSync("crypto", "gcmSeal", args);
+      this._authTag = Buffer.from(base64ToBytes(sealed.tag));
+      return Buffer.from(base64ToBytes(sealed.ciphertext));
+    }
+    // Node reports a missing tag the same way as a wrong one, and gives neither a code.
+    if (!this._authTag) throw new Error(GCM_AUTHENTICATION_FAILURE);
+    const opened = hostCallSync("crypto", "gcmOpen", [...args, bytesToBase64(this._authTag)]);
+    if (opened === null) throw new Error(GCM_AUTHENTICATION_FAILURE);
+    return Buffer.from(base64ToBytes(opened));
   }
   setAutoPadding(enabled = true) {
     if (this._finished) throw cryptoError("Invalid state", "ERR_CRYPTO_INVALID_STATE");
     this._padding = Boolean(enabled);
+    return this;
+  }
+  setAAD(buffer) {
+    if (this._mode !== "gcm" || this._finished) throw cryptoError("Invalid state", "ERR_CRYPTO_INVALID_STATE");
+    this._aad.push(cryptoBytes(buffer));
+    return this;
+  }
+  getAuthTag() {
+    if (this._decrypt || !this._authTag) throw cryptoError("Invalid state", "ERR_CRYPTO_INVALID_STATE");
+    return Buffer.from(this._authTag);
+  }
+  setAuthTag(tag, encoding) {
+    if (this._mode !== "gcm" || !this._decrypt || this._finished) {
+      throw cryptoError("Invalid state", "ERR_CRYPTO_INVALID_STATE");
+    }
+    const bytes = cryptoBytes(tag, encoding);
+    if (bytes.length !== GCM_TAG_LENGTH) throw invalidAuthTagLength(bytes.length);
+    this._authTag = bytes;
     return this;
   }
 }
@@ -845,8 +935,8 @@ const cryptoModule = {
   },
   createHash: (algorithm) => new Hash(algorithm),
   createHmac: (algorithm, key) => new Hash(algorithm, bytesToBase64(cryptoBytes(key))),
-  createCipheriv: (algorithm, key, iv) => new Cipher(algorithm, key, iv, false),
-  createDecipheriv: (algorithm, key, iv) => new Cipher(algorithm, key, iv, true),
+  createCipheriv: (algorithm, key, iv, options) => new Cipher(algorithm, key, iv, options, false),
+  createDecipheriv: (algorithm, key, iv, options) => new Cipher(algorithm, key, iv, options, true),
   pbkdf2Sync,
   pbkdf2(password, salt, iterations, keylen, digest, callback) {
     if (typeof callback !== "function") {
@@ -856,6 +946,7 @@ const cryptoModule = {
     queueMicrotask(() => callback(null, key));
   },
   timingSafeEqual: (a, b) => Buffer.from(a).equals(Buffer.from(b)),
+  getHashes: () => ["md5", "sha1", "sha256", "sha384", "sha512"],
   getRandomValues: (target) => cryptoModule.randomFillSync(target),
   webcrypto: null,
   constants: {},
@@ -909,13 +1000,30 @@ const zlibImpl = {
   constants: {},
 };
 for (const name of ["gzip", "gunzip", "deflate", "inflate", "deflateRaw", "inflateRaw"]) {
-  zlibImpl[name] = callbackify(zlibImpl[`${name}Sync`]);
+  const sync = zlibImpl[`${name}Sync`];
+  zlibImpl[name] = callbackify(sync);
+  zlibImpl[`create${name[0].toUpperCase()}${name.slice(1)}`] = () => {
+    const chunks = [];
+    return new Transform({
+      transform(chunk, _enc, cb) {
+        chunks.push(Buffer.from(chunk));
+        cb();
+      },
+      flush(cb) {
+        try {
+          cb(null, sync(concatBuffers(chunks)));
+        } catch (error) {
+          cb(error);
+        }
+      },
+    });
+  };
 }
 const zlib = unsupportedModule("zlib", zlibImpl);
 
 // ─── events ─────────────────────────────────────────────────────────
 
-class BufferedChildProcess extends EventEmitter {
+class ChildProcess extends EventEmitter {
   constructor(file, args, options) {
     super();
     this.pid = 0;
@@ -954,15 +1062,16 @@ class BufferedChildProcess extends EventEmitter {
       env: childEnv(options.env),
       timeout: options.timeout,
       input,
+      stdio: stdioDescriptors(options.stdio),
       // `detached` only makes a process group; only an unread child may answer before it exits.
       detached: !!options.detached && (Array.isArray(options.stdio) ? options.stdio[1] : options.stdio) === "ignore",
-    });
+    }, (pid) => Promise.all([pipeChild(pid, 1, this.stdout), pipeChild(pid, 2, this.stderr)]));
     this.pid = pid;
+    if (pid) queueMicrotask(() => this.emit("spawn"));
     exit.then(
       (raw) => {
         this.exitCode = raw.status;
         this.stdin.emit("finish");
-        this.emit("spawn");
         this.stdout.end(Buffer.from(base64ToBytes(raw.stdout)));
         this.stderr.end(Buffer.from(base64ToBytes(raw.stderr)));
         // One host reply carries both, but a reader still expects the output before the exit code.
@@ -1026,6 +1135,10 @@ childProcess.execFile[PROMISIFY_CUSTOM] = (file, args, options) =>
     });
   });
 
+function stdioDescriptors(stdio) {
+  return Array.isArray(stdio) ? [0, 1, 2].map((index) => (typeof stdio[index] === "number" ? stdio[index] : null)) : null;
+}
+
 function pickRunOptions(options = {}) {
   return { cwd: options.cwd, env: childEnv(options.env), timeout: options.timeout, input: options.input ? bytesToBase64(Buffer.from(options.input)) : null };
 }
@@ -1044,14 +1157,37 @@ function decorateProcessError(error, label) {
 }
 
 /// Launched synchronously because extensions store `child.pid` right away to `process.kill` it later.
-function startChild(spec) {
+function startChild(spec, drain) {
   try {
     const pid = hostCallSync("proc", "start", [spec]);
-    const exit = spec.detached ? Promise.resolve({ stdout: "", stderr: "", status: 0 }) : hostCall("proc", "wait", [pid]);
+    const exit = spec.detached
+      ? Promise.resolve({ stdout: "", stderr: "", status: 0 })
+      : Promise.resolve(drain?.(pid)).then(() => hostCall("proc", "wait", [pid]));
     return { pid, exit };
   } catch (error) {
     return { pid: undefined, exit: Promise.reject(error) };
   }
+}
+
+async function pipeChild(pid, fd, stream) {
+  let held = Buffer.alloc(0);
+  for (let chunk; (chunk = await hostCall("proc", "read", [pid, fd])); ) {
+    const bytes = Buffer.concat([held, Buffer.from(base64ToBytes(chunk))]);
+    const cut = utf8Boundary(bytes);
+    held = bytes.subarray(cut);
+    if (cut) stream.write(bytes.subarray(0, cut));
+  }
+  if (held.length) stream.write(held);
+}
+
+/// Holds back a trailing partial UTF-8 character so a chunk never splits one.
+function utf8Boundary(bytes) {
+  for (let i = bytes.length - 1; i >= Math.max(0, bytes.length - 3); i--) {
+    if ((bytes[i] & 0xc0) === 0x80) continue;
+    const need = bytes[i] >= 0xf0 ? 4 : bytes[i] >= 0xe0 ? 3 : bytes[i] >= 0xc0 ? 2 : 1;
+    return bytes.length - i < need ? i : bytes.length;
+  }
+  return bytes.length;
 }
 
 /// Node's `ChildProcess.kill` reports an undeliverable signal by returning false, never by throwing.
@@ -1093,9 +1229,6 @@ function runAsync(spec, options, callback, label) {
 
 // ─── http / https ───────────────────────────────────────────────────
 
-// Bundles ship their own HTTP client — node-fetch travels inside `@raycast/utils` — and drive
-// `http.request` instead of global `fetch`. One request, buffered both ways, over the same
-// URLSession bridge `fetch` uses: no sockets, no streaming, no keep-alive.
 class IncomingMessage extends PassThrough {
   constructor(raw) {
     super();
@@ -1171,6 +1304,7 @@ class ClientRequest extends EventEmitter {
       this.path = target.pathname + target.search;
     }
     this.method = String(options.method ?? "GET").toUpperCase();
+    this.socketPath = options.socketPath;
     this.writable = true;
     this.writableEnded = false;
     this._headers = new Map();
@@ -1252,6 +1386,7 @@ class ClientRequest extends EventEmitter {
       const raw = await hostCall("fetch", "request", [
         {
           url: this.url,
+          ...(this.socketPath ? { socketPath: this.socketPath } : {}),
           method: this.method,
           headers: this.getHeaders(),
           bodyBase64: body === null ? null : body.toString("base64"),
@@ -1548,6 +1683,11 @@ class StringDecoder {
 /// so the member has to be a real constructor — and unknown members must exist too, hence the Proxy.
 function unsupportedModule(name, extras = {}) {
   const cache = new Map();
+  const lazy = new Set((UNSUPPORTED_EXPORTS[name] ?? []).filter((each) => !(each in extras)));
+  const manufacture = (member) => {
+    if (!cache.has(member)) cache.set(member, makeUnsupported(`${name}.${member}`));
+    return cache.get(member);
+  };
   return new Proxy(extras, {
     get(target, member) {
       if (member in target) return target[member];
@@ -1555,8 +1695,14 @@ function unsupportedModule(name, extras = {}) {
       // skip the default-wrapping it would otherwise apply, and a truthy `then` makes the module
       // look like a thenable to `await`.
       if (typeof member !== "string" || RESERVED_MEMBERS.has(member)) return undefined;
-      if (!cache.has(member)) cache.set(member, makeUnsupported(`${name}.${member}`));
-      return cache.get(member);
+      return manufacture(member);
+    },
+    // esbuild's `__toESM` snapshots own keys and never reads through `get`.
+    ownKeys: (target) => [...new Set([...Reflect.ownKeys(target), ...lazy])],
+    getOwnPropertyDescriptor(target, member) {
+      const own = Reflect.getOwnPropertyDescriptor(target, member);
+      if (own || !lazy.has(member)) return own;
+      return { value: manufacture(member), writable: true, enumerable: true, configurable: true };
     },
   });
 }
@@ -1623,6 +1769,96 @@ const streamModule = unsupportedModule(
 
 const webStreamModule = { ReadableStream, WritableStream, TransformStream };
 
+/// http2-wrapper reads `new tls.TLSSocket(stream)._handle._parentWrap.constructor` at import time.
+const TLSSocket = class TLSSocket extends Duplex {
+  _handle = { _parentWrap: { constructor: TLSSocket } };
+};
+
+class AsyncLocalStorage {
+  run(_store, fn) {
+    return fn();
+  }
+  getStore() {
+    return undefined;
+  }
+}
+
+/// undici extends this at module scope; with one synchronous context, the scope is just the call.
+class AsyncResource {
+  constructor(type) {
+    this.type = type;
+  }
+  runInAsyncScope(fn, thisArg, ...args) {
+    return Reflect.apply(fn, thisArg, args);
+  }
+  bind(fn, thisArg = this) {
+    return fn.bind(thisArg);
+  }
+  emitDestroy() {
+    return this;
+  }
+  asyncId() {
+    return 0;
+  }
+  triggerAsyncId() {
+    return 0;
+  }
+}
+
+// ─── diagnostics_channel ────────────────────────────────────────────
+
+/// undici opens a channel per instrumentation point at module scope, so `channel` cannot refuse.
+class Channel {
+  constructor(name) {
+    this.name = name;
+    this._subscribers = [];
+  }
+  get hasSubscribers() {
+    return this._subscribers.length > 0;
+  }
+  subscribe(onMessage) {
+    this._subscribers.push(onMessage);
+  }
+  unsubscribe(onMessage) {
+    const index = this._subscribers.indexOf(onMessage);
+    if (index === -1) return false;
+    this._subscribers.splice(index, 1);
+    return true;
+  }
+  publish(message) {
+    for (const onMessage of [...this._subscribers]) {
+      try {
+        onMessage(message, this.name);
+      } catch (error) {
+        reportUncaught(error);
+      }
+    }
+  }
+  bindStore() {}
+  unbindStore() {
+    return false;
+  }
+  runStores(message, fn, thisArg, ...args) {
+    this.publish(message);
+    return Reflect.apply(fn, thisArg, args);
+  }
+}
+
+const channels = new Map();
+
+function channel(name) {
+  if (!channels.has(name)) channels.set(name, new Channel(name));
+  return channels.get(name);
+}
+
+const diagnosticsChannel = unsupportedModule("diagnostics_channel", {
+  Channel,
+  channel,
+  hasSubscribers: (name) => channels.get(name)?.hasSubscribers ?? false,
+  subscribe: (name, onMessage) => channel(name).subscribe(onMessage),
+  unsubscribe: (name, onMessage) => channels.get(name)?.unsubscribe(onMessage) ?? false,
+});
+
 // ─── Registry ───────────────────────────────────────────────────────
 
 export const nodeModules = {
@@ -1650,32 +1886,35 @@ export const nodeModules = {
   https: httpLike("https"),
   dgram,
   net: unsupportedModule("net"),
-  tls: unsupportedModule("tls"),
+  tls: unsupportedModule("tls", { TLSSocket }),
   dns: unsupportedModule("dns"),
   stream: streamModule,
   "stream/web": webStreamModule,
   "stream/promises": { pipeline: (...stages) => pipelinePromise(stages), finished: finishedPromise },
-  worker_threads: unsupportedModule("worker_threads", { isMainThread: true }),
+  // No-ops rather than refusals: undici's `markAsUncloneable || (() => {})` never falls back.
+  worker_threads: unsupportedModule("worker_threads", {
+    isMainThread: true,
+    markAsUncloneable: () => {},
+    markAsUntransferable: () => {},
+    isMarkedAsUntransferable: () => false,
+  }),
   readline: unsupportedModule("readline"),
   tty: { isatty: () => false },
   vm: unsupportedModule("vm"),
-  module: { createRequire: () => requireStub, builtinModules: [] },
+  module: { builtinModules: [] },
   constants: {},
   cluster: { isPrimary: true, isMaster: true },
   inspector: {},
   v8: {},
-  async_hooks: { AsyncLocalStorage: class { run(_store, fn) { return fn(); } getStore() { return undefined; } } },
+  async_hooks: { AsyncLocalStorage, AsyncResource },
+  diagnostics_channel: diagnosticsChannel,
 };
-
-function requireStub(name) {
-  throw new Error(`createRequire is not supported in Tinycast extensions (tried to load "${name}").`);
-}
 
 // Every remaining Node builtin resolves to a refuse-on-use stub. Bundles reference the whole
 // long tail (http2, domain, repl, …) from dependencies that only touch them on paths an
 // extension never reaches, so a require-time throw would fail extensions that actually work.
 const REMAINING_BUILTINS = [
-  "assert/strict", "console", "diagnostics_channel", "dns/promises", "domain", "http2",
+  "assert/strict", "console", "dns/promises", "domain", "http2",
   "inspector/promises", "path/posix", "path/win32", "readline/promises", "repl",
   "stream/consumers", "sys", "trace_events", "util/types", "wasi", "sea", "sqlite", "test",
   "test/reporters",
@@ -1699,5 +1938,26 @@ for (const name of Object.keys(nodeModules)) {
 globalThis.process = process;
 globalThis.Buffer = Buffer;
 globalThis.global = globalThis;
+
+// JSContext exposes native Atomics but no shared buffers; extensions have no worker threads.
+if (typeof globalThis.SharedArrayBuffer === "undefined") {
+  globalThis.SharedArrayBuffer = ArrayBuffer;
+  const load = Atomics.load;
+  Atomics.wait = (array, index, value, timeout) => {
+    if (!(array instanceof Int32Array) && !(array instanceof BigInt64Array)) {
+      throw new TypeError("Atomics.wait requires an Int32Array or BigInt64Array");
+    }
+    const offset = Math.trunc(+index) || 0;
+    load(array, offset);
+    const expected = array instanceof BigInt64Array ? BigInt.asIntN(64, value) : value >> 0;
+    const milliseconds = +timeout;
+    if (load(array, offset) !== expected) return "not-equal";
+    if (Number.isNaN(milliseconds) || milliseconds === Infinity) {
+      throw new TypeError("Atomics.wait with an infinite timeout is not supported in Tinycast extensions");
+    }
+    if (milliseconds > 0) hostCallSync("atomics", "wait", [milliseconds]);
+    return "timed-out";
+  };
+}
 
 export { Buffer, process, EventEmitter };

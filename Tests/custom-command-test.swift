@@ -21,6 +21,68 @@ struct CustomCommandTests {
             }
         }
 
+        // MARK: Editor
+
+        let editor = CustomCommandEditorSession(command: nil)
+        check("a new editor starts on its name", editor.focusedField == .name)
+        check("an empty editor cannot save", !editor.canSave)
+        check(
+            "a new editor preserves command defaults",
+            editor.draft().isEnabled && editor.draft().showsInRootSearch
+                && !editor.loadsShellEnvironment && !editor.requiresConfirmation
+                && !editor.showsConfirmation && !editor.showsOutput && editor.arguments.isEmpty
+                && editor.workingDirectory.isEmpty && editor.iconSymbol == nil)
+        editor.name = "   "
+        editor.shellCommand = "/usr/bin/true"
+        check("a whitespace-only name cannot save", !editor.canSave)
+        editor.name = "Test Command"
+        editor.shellCommand = "\n "
+        check("a whitespace-only script cannot save", !editor.canSave)
+        editor.shellCommand = "/usr/bin/true"
+        check("a named nonempty script can save", editor.canSave)
+        editor.advanceFocus(backwards: true)
+        check("Shift-Tab wraps to the last option", editor.focusedField == .output)
+        editor.advanceFocus(backwards: false)
+        check("Tab wraps back to the name", editor.focusedField == .name)
+        for _ in 0..<CustomCommandArgument.limit { editor.addArgument() }
+        let argumentIDs = editor.arguments.map(\.id)
+        check("adding an argument focuses its name", editor.focusedField == .argumentName(argumentIDs[2]))
+        editor.addArgument()
+        check("the editor enforces the argument cap", editor.arguments.map(\.id) == argumentIDs)
+        check("Tab skips Add at the argument cap", !editor.focusOrder.contains(.addArgument))
+        editor.focusedField = .removeArgument(argumentIDs[1])
+        editor.removeArgument(id: argumentIDs[1])
+        check(
+            "removal keeps the neighboring argument identities",
+            editor.arguments.map(\.id)
+                == [argumentIDs[0], argumentIDs[2]])
+        check(
+            "removing a focused argument focuses its successor",
+            editor.focusedField == .argumentName(argumentIDs[2]))
+        check("removal restores Add to the focus order", editor.focusOrder.contains(.addArgument))
+        editor.removeArgument(id: argumentIDs[2])
+        editor.removeArgument(id: argumentIDs[0])
+        check("removing the last argument focuses Add", editor.focusedField == .addArgument)
+        let source = CustomCommand(
+            name: "Original", command: "printf '%s' \"$1\"", isEnabled: false,
+            showsInRootSearch: false,
+            loadsShellEnvironment: true, requiresConfirmation: true, showsConfirmation: true,
+            arguments: [CustomCommandArgument(name: "Query", isOptional: true)], showsOutput: true,
+            workingDirectory: "~/Documents", iconSymbol: "hammer")
+        let editing = CustomCommandEditorSession(command: source)
+        check("editing carries every existing field", editing.draft() == source)
+        editing.focusedField = .rootSearch
+        editing.advanceFocus(backwards: false)
+        check(
+            "Tab includes root-search visibility before execution options",
+            editing.focusedField == .shellEnvironment)
+        editing.name = "Renamed"
+        editing.shellCommand = "/usr/bin/true"
+        check(
+            "editing preserves the UUID and enabled flag",
+            editing.draft().id == source.id
+                && !editing.draft().isEnabled)
+
         // MARK: Store
 
         let store = CustomCommandStore(defaults: defaults)
@@ -64,10 +126,24 @@ struct CustomCommandTests {
         check("a new command is enabled", store.command(id: added.id)?.isEnabled == true)
         store.setEnabled(false, id: added.id)
         check("disabling is stored", store.command(id: added.id)?.isEnabled == false)
+        check("disabled commands are absent from the browser", store.matching("").isEmpty)
         check(
             "disabling keeps every other field intact",
             store.command(id: added.id)?.command == "/usr/bin/true")
         store.setEnabled(true, id: added.id)
+
+        check("a new command shows in root search", store.command(id: added.id)?.showsInRootSearch == true)
+        store.setShowsInRootSearch(false, id: added.id)
+        check("the browser includes root-hidden commands", store.matching("").map(\.id) == [added.id])
+        check(
+            "browser search ignores case and outer whitespace",
+            store.matching("  SCREENS\n").map(\.id) == [added.id])
+        check("browser search never matches script content", store.matching("/usr/bin/true").isEmpty)
+        check("unmatched browser search returns no rows", store.matching("No such command").isEmpty)
+        check(
+            "hiding from root search is stored and leaves it enabled",
+            store.command(id: added.id)?.showsInRootSearch == false
+                && store.command(id: added.id)?.isEnabled == true)
 
         let expected = store.commands
         check(
@@ -117,6 +193,9 @@ struct CustomCommandTests {
         check(
             "a record written before the enabled flag loads as enabled",
             CustomCommandStore(defaults: defaults).commands.first?.isEnabled == true)
+        check(
+            "a record written before the root-search flag still shows there",
+            CustomCommandStore(defaults: defaults).commands.first?.showsInRootSearch == true)
 
         // MARK: Batch add
 
@@ -233,6 +312,31 @@ struct CustomCommandTests {
             "a folder yields its script commands in name order and nothing else",
             RaycastScriptImport.scan(directory: scriptDirectory).map(\.name) == ["First", "Second"])
 
+        // Linked scripts import, keeping the link's path so the command follows its target.
+        let linkTarget = scriptDirectory.appendingPathComponent("nested/linked.sh")
+        try? Data("#!/bin/bash\n# @raycast.title Linked\nprintf '%s' 'linked-target-ran'\n".utf8)
+            .write(to: linkTarget)
+        let link = scriptDirectory.appendingPathComponent("c-linked.sh")
+        try? FileManager.default.createSymbolicLink(at: link, withDestinationURL: linkTarget)
+        // Checked, or a link that was never made would pass "doesn't import" for free.
+        let skippedLinksMade =
+            (try? FileManager.default.createSymbolicLink(
+                at: scriptDirectory.appendingPathComponent("d-dangling.sh"),
+                withDestinationURL: scriptDirectory.appendingPathComponent("missing.sh"))) != nil
+            && (try? FileManager.default.createSymbolicLink(
+                at: scriptDirectory.appendingPathComponent("e-folder"),
+                withDestinationURL: scriptDirectory.appendingPathComponent("nested"))) != nil
+        check("the dangling and folder links exist", skippedLinksMade)
+        let withLinks = RaycastScriptImport.scan(directory: scriptDirectory)
+        check(
+            "a linked script imports; a dangling or folder link doesn't",
+            withLinks.map(\.name) == ["First", "Second", "Linked"])
+        let linked = withLinks.first { $0.name == "Linked" }
+        check("a linked script keeps its link's path", linked?.command.contains(link.path) == true)
+        let linkedRun = await ShellCommandRunner.run(
+            linked?.command ?? "", workingDirectory: linked?.workingDirectory)
+        check("a linked script runs its target", linkedRun.standardOutput == "linked-target-ran")
+
         // The whole run, through `"$@"`: an imported script reads its value as data, never as syntax.
         try? Data("#!/bin/bash\n# @raycast.title Echo\nprintf '%s' \"$1\"\n".utf8).write(
             to: scriptDirectory.appendingPathComponent("echo.sh"))
@@ -264,7 +368,6 @@ struct CustomCommandTests {
 
         // MARK: Streaming output
 
-        /// Drains a streamed run, returning everything it printed and how it ended.
         func collect(_ session: ShellCommandSession) async -> (log: String, result: ShellCommandResult?) {
             var log = ""
             var result: ShellCommandResult?
@@ -305,6 +408,84 @@ struct CustomCommandTests {
         check(
             "output arrives while the command is still running",
             (firstOutputAt ?? .greatestFiniteMagnitude) < 0.5)
+
+        // A picker's last line ends without a newline, and the command then waits on its answer.
+        let prompting = ShellCommandRunner.stream("printf 'Continue? [y/N] '; sleep 1")
+        let asked = Date()
+        var promptShownAt: TimeInterval?
+        for await event in prompting.events {
+            if case .output(let text) = event, text.contains("Continue?"), promptShownAt == nil {
+                promptShownAt = Date().timeIntervalSince(asked)
+            }
+        }
+        check(
+            "a prompt that ends no line is shown while the command waits",
+            (promptShownAt ?? .greatestFiniteMagnitude) < 0.5)
+
+        // `é` split across reads: the text before it flushes, its lone lead byte waits for the rest.
+        var decoder = ShellCommandRunner.TerminalTextDecoder()
+        decoder.append([0x63, 0x61, 0x66, 0xC3], count: 4)
+        check("text ahead of a split character can flush", decoder.canFlush)
+        check("a forced flush stops short of the split character", decoder.take(force: true) == "caf")
+        check("a lone partial character gives the idle flush nothing to wait on", !decoder.canFlush)
+        decoder.append([0xA9], count: 1)
+        check("the completed character flushes whole", decoder.take(force: true) == "\u{e9}")
+
+        let splitAcrossWrites = ShellCommandRunner.stream("printf 'caf\\303'; sleep 0.6; printf '\\251\\n'")
+        let splitStarted = Date()
+        var splitLog = ""
+        var headShownAt: TimeInterval?
+        for await event in splitAcrossWrites.events {
+            guard case .output(let text) = event else { continue }
+            splitLog += text
+            if headShownAt == nil { headShownAt = Date().timeIntervalSince(splitStarted) }
+        }
+        check(
+            "a character split across writes arrives whole and uncorrupted",
+            splitLog == "caf\u{e9}\r\n" && (headShownAt ?? .greatestFiniteMagnitude) < 0.5)
+
+        func transcript(_ session: ShellCommandSession) async -> String {
+            var log = ""
+            for await event in session.events {
+                if case .output(let text) = event { log += text }
+            }
+            return log
+        }
+
+        let coloured = await transcript(ShellCommandRunner.stream("printf '\\033[1;31mred\\033[0m plain\\n'"))
+        check(
+            "colour escapes reach the window byte for byte",
+            coloured == "\u{1B}[1;31mred\u{1B}[0m plain\r\n")
+
+        let progress = await transcript(
+            ShellCommandRunner.stream("for i in 1 2 3; do printf '\\r%d%%' $i; sleep 0.1; done; echo"))
+        check("progress frames arrive in order, none lost or doubled", progress == "\r1%\r2%\r3%\r\n")
+
+        let large = await collect(
+            ShellCommandRunner.stream("head -c 200000 /dev/zero | tr '\\0' x; printf '\\n'; seq 20000"))
+        let largeLines = large.log.split(separator: "\n", omittingEmptySubsequences: false)
+        check(
+            "large output arrives complete",
+            largeLines.count == 20001 && largeLines.first?.count == 200_000 && largeLines.last == "20000")
+
+        // Stopped once the prompt shows, so a slow shell start under load cannot race the stop.
+        let heldPrompt = ShellCommandRunner.stream("printf 'Continue? '; sleep 5")
+        var stoppedAt: Date?
+        var heldResult: ShellCommandResult?
+        for await event in heldPrompt.events {
+            switch event {
+            case .output(let text):
+                guard stoppedAt == nil, text.contains("Continue?") else { continue }
+                stoppedAt = Date()
+                heldPrompt.stop()
+            case .finished(let result):
+                heldResult = result
+            }
+        }
+        check(
+            "stop ends a command waiting at a prompt, which still showed",
+            heldResult?.termination == .stopped
+                && Date().timeIntervalSince(stoppedAt ?? .distantPast) < 1.5)
 
         let statused = await collect(ShellCommandRunner.stream("exit 7"))
         check(
@@ -409,6 +590,36 @@ struct CustomCommandTests {
             "a value carrying shell syntax is data, not code",
             injected.log.contains("; touch /tmp/tinycast-should-not-exist")
                 && !FileManager.default.fileExists(atPath: "/tmp/tinycast-should-not-exist"))
+
+        // MARK: Another interpreter
+
+        // The same text means `x` to zsh; only bash itself answers `y`.
+        let bashArray = await ShellCommandRunner.run("#!/bin/bash\na=(x y)\nprintf '%s' \"${a[1]}\"")
+        check("a #! line picks the interpreter that runs the text", bashArray.standardOutput == "y")
+
+        let scripted = await ShellCommandRunner.run(
+            "#!/bin/sh\nprintf '%s\\n' \"$0\" \"$1\"",
+            arguments: ["; touch /tmp/tinycast-script-should-not-exist"])
+        let scriptedLines = scripted.standardOutput?.split(separator: "\n").map(String.init) ?? []
+        check(
+            "a #! script reads its value as data, never as syntax",
+            scriptedLines.last == "; touch /tmp/tinycast-script-should-not-exist"
+                && !FileManager.default.fileExists(atPath: "/tmp/tinycast-script-should-not-exist"))
+        check(
+            "a #! script's file is gone once it exits",
+            scriptedLines.count == 2 && !FileManager.default.fileExists(atPath: scriptedLines[0]))
+
+        let streamedScript = await collect(
+            ShellCommandRunner.stream("#!/bin/bash\nprintf '%s\\n' \"$BASH\""))
+        check(
+            "a #! script streams under the pty too",
+            streamedScript.log.contains("/bin/bash") && streamedScript.result?.succeeded == true)
+
+        let missingInterpreter = await ShellCommandRunner.run("#!/nope/bash\ntrue")
+        check(
+            "a missing interpreter is named in the failure",
+            missingInterpreter.termination == .exited(status: 127)
+                && missingInterpreter.standardError?.contains("/nope/bash") == true)
 
         // MARK: Inline argument values
 

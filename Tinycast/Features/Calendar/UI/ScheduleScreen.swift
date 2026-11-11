@@ -1,6 +1,5 @@
 import SwiftUI
 
-/// My Schedule: the store's span, filtered by the query. Enter joins, ⌘K carries the rest.
 struct ScheduleScreen: PaletteScreen {
     let store: CalendarStore
     let clock: MeetingClock
@@ -20,7 +19,8 @@ struct ScheduleScreen: PaletteScreen {
 
     /// A meeting with no link has nowhere to join, so the pill offers what it can instead.
     var primaryActionTitle: String {
-        meeting(at: vm.selection)?.link == nil ? "Open in Calendar" : "Join Meeting"
+        meeting(at: vm.selection)?.link == nil
+            ? String(localized: "Open in Calendar") : String(localized: "Join Meeting")
     }
 
     private func meeting(at selection: Int) -> MeetingEvent? {
@@ -40,9 +40,13 @@ struct ScheduleScreen: PaletteScreen {
 
     /// ⌘↵ — copy the link, for the "what's the link?" message rather than the call itself.
     func secondary(at selection: Int) -> Bool {
-        guard let meeting = meeting(at: selection), meeting.link != nil else { return false }
-        core.calendarCoordinator.copyLink(meeting)
-        return true
+        guard let meeting = meeting(at: selection) else { return false }
+        return MeetingActionsMenu.secondary(meeting: meeting, core: core)
+    }
+
+    func perform(_ shortcut: PaletteShortcut, at selection: Int) -> Bool {
+        guard let meeting = meeting(at: selection) else { return false }
+        return MeetingActionsMenu.perform(shortcut, meeting: meeting, core: core)
     }
 
     func body(selection: Int, scroll: ScrollIntent) -> AnyView {
@@ -71,8 +75,10 @@ struct ScheduleScreen: PaletteScreen {
 
     /// Names why the list is empty: no access reads very differently from a free afternoon.
     private var emptyMessage: String {
-        if store.access != .granted { return "Tinycast has no access to your calendar" }
-        if !vm.query.trimmingCharacters(in: .whitespaces).isEmpty { return "No matching meetings" }
-        return "Nothing scheduled \(store.span.orPhrase)"
+        if store.access != .granted { return String(localized: "Tinycast has no access to your calendar") }
+        if !vm.query.trimmingCharacters(in: .whitespaces).isEmpty {
+            return String(localized: "No matching meetings")
+        }
+        return store.span.nothingScheduledMessage
     }
 }

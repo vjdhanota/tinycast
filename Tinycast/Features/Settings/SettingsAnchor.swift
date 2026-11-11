@@ -1,9 +1,16 @@
+import Foundation
+
 /// One `Section` inside a pane, named once so the catalog and the pane cannot disagree: the search
 /// result carries the anchor, the pane's `.settingsAnchor(_:)` marks the section it scrolls to.
 struct SettingsAnchor: Hashable, Sendable {
     let tab: SettingsTab
     /// The `Section`'s own header text, which is also what a result's breadcrumb reads.
     let title: String
+
+    init(tab: SettingsTab, title: LocalizedStringResource) {
+        self.tab = tab
+        self.title = title.resolved()
+    }
 }
 
 // Named `<pane><Section>` throughout, so the constant for a section is always guessable from it.
@@ -12,8 +19,10 @@ extension SettingsAnchor {
     static let generalSearch = Self(tab: .general, title: "Search")
     static let generalHyperKey = Self(tab: .general, title: "Hyper Key")
     static let generalAppearance = Self(tab: .general, title: "Appearance")
+    static let generalCompactShortcuts = Self(tab: .general, title: "Compact Shortcuts")
     static let generalCalculator = Self(tab: .general, title: "Calculator")
     static let generalGeneral = Self(tab: .general, title: "General")
+    static let generalDeepLinks = Self(tab: .general, title: "Deeplinks")
 
     static let applicationsSearchScopes = Self(tab: .applications, title: "Search Scopes")
     static let applicationsApplications = Self(tab: .applications, title: "Applications")
@@ -31,7 +40,9 @@ extension SettingsAnchor {
     static let quicklinksImportExport = Self(tab: .quicklinks, title: "Import & Export")
 
     static let appleShortcutsAppleShortcuts = Self(tab: .appleShortcuts, title: "Apple Shortcuts")
-    static let appleShortcutsShortcuts = Self(tab: .appleShortcuts, title: "Shortcuts")
+    static let appleShortcutsShortcuts = Self(
+        tab: .appleShortcuts,
+        title: LocalizedStringResource("apple-shortcuts-section", defaultValue: "Shortcuts"))
 
     static let fallbacksFallbacks = Self(tab: .fallbacks, title: "Fallbacks")
 
@@ -41,8 +52,7 @@ extension SettingsAnchor {
     static let aiChat = Self(tab: .ai, title: "Chat")
     static let aiConversations = Self(tab: .ai, title: "Conversations")
     static let aiSystemPrompt = Self(tab: .ai, title: "System prompt")
-    static let aiInstalledAI = Self(tab: .ai, title: "Installed AI")
-    static let aiAPIConnections = Self(tab: .ai, title: "API Connections")
+    static let aiChatPresets = Self(tab: .ai, title: "Chat Presets")
     static let aiMCPServers = Self(tab: .ai, title: "MCP Servers")
     static let aiCommands = Self(tab: .ai, title: "Commands")
 
@@ -51,12 +61,21 @@ extension SettingsAnchor {
     static let quickActionsModel = Self(tab: .quickActions, title: "Model")
     static let quickActionsTranslate = Self(tab: .quickActions, title: "Translate")
 
+    static let dictationDictation = Self(tab: .dictation, title: "Dictation")
+    static let dictationCommands = Self(tab: .dictation, title: "Commands")
+    static let dictationModel = Self(tab: .dictation, title: "Model")
+    static let dictationMemory = Self(tab: .dictation, title: "Memory")
+    static let dictationOutput = Self(tab: .dictation, title: "Output")
+
     static let fileSearchFileSearch = Self(tab: .fileSearch, title: "File Search")
+    static let fileSearchFullDiskAccess = Self(tab: .fileSearch, title: "Full Disk Access")
+    static let fileSearchIndex = Self(tab: .fileSearch, title: "Index")
     static let fileSearchCommands = Self(tab: .fileSearch, title: "Commands")
     static let fileSearchSearchScopes = Self(tab: .fileSearch, title: "Search Scopes")
     static let fileSearchIgnorePatterns = Self(tab: .fileSearch, title: "Ignore Patterns")
 
     static let notesNotes = Self(tab: .notes, title: "Notes")
+    static let notesOptions = Self(tab: .notes, title: "Options")
     static let notesCommands = Self(tab: .notes, title: "Commands")
 
     static let snippetsSnippets = Self(tab: .snippets, title: "Snippets")
@@ -70,8 +89,9 @@ extension SettingsAnchor {
     static let windowManagementWindowManagement = Self(
         tab: .windowManagement, title: "Window Management")
     static let windowManagementLayouts = Self(tab: .windowManagement, title: "Window Layouts")
+    static let windowManagementRooms = Self(tab: .windowManagement, title: "Rooms")
     static let windowManagementLayoutCommands = Self(
-        tab: .windowManagement, title: "Layout Commands")
+        tab: .windowManagement, title: "Layout and Room Commands")
     static let windowManagementOptions = Self(tab: .windowManagement, title: "Options")
     static let windowManagementCustomSizes = Self(tab: .windowManagement, title: "Custom Sizes")
 
@@ -79,36 +99,41 @@ extension SettingsAnchor {
     static let clipboardCommands = Self(tab: .clipboard, title: "Commands")
     static let clipboardHistory = Self(tab: .clipboard, title: "History")
     static let clipboardDisabledApplications = Self(
-        tab: .clipboard, title: "Disabled Applications")
+        tab: .clipboard, title: "Excluded Applications")
 
     static let emojiCommands = Self(tab: .emoji, title: "Commands")
     static let emojiAppearance = Self(tab: .emoji, title: "Appearance")
 
     static let calendarCalendar = Self(tab: .calendar, title: "Calendar")
     static let calendarCommands = Self(tab: .calendar, title: "Commands")
-    static let calendarSchedule = Self(tab: .calendar, title: "Schedule")
     static let calendarJoining = Self(tab: .calendar, title: "Joining")
     static let calendarMenuBar = Self(tab: .calendar, title: "Menu Bar")
     static let calendarCalendars = Self(tab: .calendar, title: "Calendars")
 
     static let extensionsExtensions = Self(tab: .extensions, title: "Extensions")
     static let extensionsCompatibility = Self(tab: .extensions, title: "Compatibility")
-    static let extensionsInstalled = Self(tab: .extensions, title: "Installed")
-    static let extensionsInstall = Self(tab: .extensions, title: "Install")
+    static let extensionsInstalled = Self(
+        tab: .extensions,
+        title: LocalizedStringResource("extensions-installed-section", defaultValue: "Installed"))
+    static let extensionsInstall = Self(
+        tab: .extensions,
+        title: LocalizedStringResource("extensions-install-section", defaultValue: "Install"))
     static let extensionsStorage = Self(tab: .extensions, title: "Storage")
 
     static let permissionsAccessibility = Self(tab: .permissions, title: "Accessibility")
+    static let permissionsFullDiskAccess = Self(tab: .permissions, title: "Full Disk Access")
     static let permissionsCalendars = Self(tab: .permissions, title: "Calendars")
+    static let permissionsMicrophone = Self(tab: .permissions, title: "Microphone")
 
     static let backupExport = Self(tab: .backup, title: "Export")
     static let backupImport = Self(tab: .backup, title: "Import")
     static let backupImportFromRaycast = Self(tab: .backup, title: "Import from Raycast")
+    static let backupSettingsFile = Self(tab: .backup, title: "Settings File")
 
     static let aboutAbout = Self(tab: .about, title: "About")
     static let aboutLinks = Self(tab: .about, title: "Links")
 }
 
-/// Where a search result lands: a whole section, or one row inside it.
 enum SettingsTarget: Hashable, Sendable {
     case section(SettingsAnchor)
     /// The row's visible title, which is also the catalog entry's — they are the same string.

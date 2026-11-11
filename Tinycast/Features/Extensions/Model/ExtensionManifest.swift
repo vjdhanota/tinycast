@@ -1,24 +1,11 @@
 import Foundation
 
-/// Only `view` and `noView` run; the rest are recognised so the launcher can explain them.
 enum ExtensionCommandMode: String, Sendable, Codable {
     case view
     case noView = "no-view"
     case menuBar = "menu-bar"
-
-    /// The string the JS runtime expects (it only distinguishes mounted from headless).
-    var runtimeName: String { self == .view ? "view" : "no-view" }
-
-    var isSupported: Bool { self != .menuBar }
-
-    var unsupportedReason: String? {
-        self == .menuBar
-            ? "Menu bar commands aren't supported yet — Tinycast only runs view and no-view commands."
-            : nil
-    }
 }
 
-/// One entry from a manifest's `preferences` array.
 struct ExtensionPreferenceSchema: Sendable, Hashable {
     enum Kind: String, Sendable {
         case textfield
@@ -50,7 +37,6 @@ struct ExtensionPreferenceSchema: Sendable, Hashable {
     /// Already resolved for macOS: a manifest default can be platform-keyed.
     let defaultValue: ExtensionPreferenceValue?
 
-    /// The value to use when the user hasn't set one — falls back to a type-appropriate empty.
     var effectiveDefault: ExtensionPreferenceValue {
         defaultValue ?? (kind == .checkbox ? .bool(false) : .string(""))
     }
@@ -82,7 +68,6 @@ struct ExtensionPreferenceSchema: Sendable, Hashable {
     }
 }
 
-/// A preference value as it round-trips between the manifest, `UserDefaults` and JS.
 enum ExtensionPreferenceValue: Sendable, Hashable {
     case string(String)
     case bool(Bool)
@@ -193,7 +178,10 @@ struct ExtensionCommand: Sendable, Hashable, Identifiable {
         description = dict["description"] as? String ?? ""
         mode = ExtensionCommandMode(rawValue: dict["mode"] as? String ?? "view") ?? .view
         intervalRaw = dict["interval"] as? String
-        interval = ExtensionRefreshPolicy.parse(intervalRaw)
+        interval = ExtensionRefreshPolicy.parse(
+            intervalRaw,
+            floor: mode == .menuBar
+                ? ExtensionRefreshPolicy.menuBarMinimumInterval : ExtensionRefreshPolicy.minimumInterval)
         keywords = dict["keywords"] as? [String] ?? []
         icon = dict["icon"] as? String
         disabledByDefault = dict["disabledByDefault"] as? Bool ?? false
@@ -208,11 +196,15 @@ struct ExtensionManifest: Sendable, Hashable {
     let title: String
     let description: String
     let author: String
+    /// The organisation an extension is published under, when it isn't its author's own.
+    let owner: String?
     let icon: String?
     let categories: [String]
     let platforms: [String]?
     let commands: [ExtensionCommand]
     let preferences: [ExtensionPreferenceSchema]
+
+    var storeHandle: String { owner ?? author }
 
     /// `platforms` is absent on older manifests, which predate Windows support and are macOS-only.
     var supportsMacOS: Bool {
@@ -227,9 +219,10 @@ struct ExtensionManifest: Sendable, Hashable {
         var errorDescription: String? {
             switch self {
             case .unreadable(let url):
-                return "Couldn't read \(url.lastPathComponent)."
+                return String(localized: "Couldn't read \(url.lastPathComponent).")
             case .notAnExtension(let url):
-                return "\(url.lastPathComponent) doesn't contain a Raycast extension manifest."
+                return String(
+                    localized: "\(url.lastPathComponent) doesn't contain a Raycast extension manifest.")
             }
         }
     }
@@ -253,6 +246,7 @@ struct ExtensionManifest: Sendable, Hashable {
         title = json["title"] as? String ?? name
         description = json["description"] as? String ?? ""
         author = json["author"] as? String ?? ""
+        owner = json["owner"] as? String
         icon = json["icon"] as? String
         categories = json["categories"] as? [String] ?? []
         platforms = json["platforms"] as? [String]

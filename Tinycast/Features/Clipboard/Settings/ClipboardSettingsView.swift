@@ -11,11 +11,12 @@ struct ClipboardSettingsView: View {
         return Form {
             Section {
                 Toggle(isOn: $settings.clipboardEnabled) {
-                    SettingsRowTitle(.clipboardClipboard, "Enable Clipboard History")
+                    SettingsFeatureToggleLabel(
+                        anchor: .clipboardClipboard, title: "Enable Clipboard History",
+                        subtitle: "Keep copied items ready to reuse.")
                 }
-            } header: {
-                SettingsSectionHeader(.clipboardClipboard)
             }
+            .settingsAnchor(.clipboardClipboard)
 
             FeatureCommandsSection(owner: .clipboard, anchor: .clipboardCommands)
                 .settingsEnabled(settings.clipboardEnabled)
@@ -28,9 +29,6 @@ struct ClipboardSettingsView: View {
                 } label: {
                     SettingsRowTitle(.clipboardHistory, "Keep history for")
                 }
-                .onChange(of: settings.clipboardRetention) {
-                    core.clipboardCoordinator.applyRetention(settings.clipboardRetention)
-                }
                 Toggle(isOn: $settings.clipboardTextSearchEnabled) {
                     SettingsRowTitle(.clipboardHistory, "Search text in images and PDFs")
                     Text("Recognized on this Mac while idle.")
@@ -41,7 +39,7 @@ struct ClipboardSettingsView: View {
                     }
                 } label: {
                     SettingsRowTitle(.clipboardHistory, "Default action")
-                    Text("↵ does this; ⌘↵ does the other.")
+                    Text("↵ does this, and Paste takes its shortcut.")
                 }
             } header: {
                 SettingsSectionHeader(.clipboardHistory)
@@ -51,7 +49,7 @@ struct ClipboardSettingsView: View {
             DisabledApplicationsSection(
                 bundleIDs: $settings.clipboardDisabledApps,
                 anchor: .clipboardDisabledApplications,
-                footer: "Copies from these apps aren't recorded."
+                footer: String(localized: "Copies from these apps aren't recorded.")
             )
             .settingsEnabled(settings.clipboardEnabled)
 
@@ -60,7 +58,7 @@ struct ClipboardSettingsView: View {
                     Button("Clear…", role: .destructive) { confirmingClear = true }
                 } label: {
                     SettingsRowTitle(.clipboardDisabledApplications, "Clear history")
-                    Text("Removes every clip and image.")
+                    Text("Removes every item in the history.")
                 }
             }
         }

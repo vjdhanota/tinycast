@@ -3,27 +3,15 @@ import SwiftUI
 struct GeneralSettingsView: View {
     @Environment(AppCore.self) private var core
     @Environment(AppSettings.self) private var settings
-    private var hyperTap: HyperKeyTap { core.hyperKeyTap }
     private var launcherRanking: LauncherRankingStore { core.launcherRanking }
-    // The same key `MenuBarExtra(isInserted:)` binds, so this updates the icon live.
-    @AppStorage(SettingsKey.showInMenuBar) private var showInMenuBar = true
     @State private var confirmingRankingReset = false
     @State private var inputSources: [InputSourceSwitcher.Option] = []
-
-    /// The Hyper modifier chord as prose glyphs, tracking the Include Shift toggle.
-    private var hyperGlyphs: String { settings.hyperKeyIncludesShift ? "⌃⌥⇧⌘" : "⌃⌥⌘" }
-
-    /// The missing-permission half is its own row, so it can carry the button that fixes it.
-    private var hyperSubtitle: String {
-        guard settings.hyperKey != .none else { return "Remap one key to \(hyperGlyphs) held together." }
-        return "\(settings.hyperKey.title) sends \(hyperGlyphs), shown as ✦ in shortcuts."
-    }
 
     var body: some View {
         @Bindable var settings = settings
         return Form {
             Section {
-                SettingsRow(title: "App Launcher", anchor: .generalGlobalShortcuts) {
+                SettingsRow(title: "Show Launcher", anchor: .generalGlobalShortcuts) {
                     ShortcutRecorder(action: .togglePalette)
                 }
             } header: {
@@ -31,12 +19,23 @@ struct GeneralSettingsView: View {
             }
 
             Section {
+                Picker(selection: $settings.language) {
+                    ForEach(AppLanguage.allCases) { language in
+                        Text(verbatim: language.title).tag(language)
+                    }
+                } label: {
+                    SettingsRowTitle(.generalGeneral, "Language")
+                }
                 Toggle(isOn: $settings.launchAtLogin) {
                     SettingsRowTitle(.generalGeneral, "Launch at login")
                 }
-                Toggle(isOn: $showInMenuBar) {
+                Toggle(isOn: $settings.showInMenuBar) {
                     SettingsRowTitle(.generalGeneral, "Show in menu bar")
-                    Text("Shortcuts still work when hidden.")
+                    Text("Shortcuts still work when the menu bar icon is hidden.")
+                }
+                Toggle(isOn: $settings.automaticallyCheckForUpdates) {
+                    SettingsRowTitle(.generalGeneral, "Automatically check for updates")
+                    Text("You can still check for updates manually.")
                 }
                 Picker(selection: $settings.popToRootTimeout) {
                     ForEach(PopToRootTimeout.allCases) { timeout in
@@ -76,94 +75,60 @@ struct GeneralSettingsView: View {
                         Text(appearance.title).tag(appearance)
                     }
                 } label: {
-                    SettingsRowTitle(.generalAppearance, "Theme")
+                    SettingsRowTitle(.generalAppearance, "Appearance")
+                }
+                Toggle(isOn: $settings.animationsEnabled) {
+                    SettingsRowTitle(.generalAppearance, "Show animations")
                 }
                 InterfaceSizeRow()
-                PaletteTransparencyRow()
-                Toggle(isOn: $settings.compactMode) {
-                    SettingsRowTitle(.generalAppearance, "Compact mode")
-                    Text("A slim search bar that expands as you type.")
-                }
-                Toggle(isOn: $settings.showFavoritesInCompactMode) {
-                    SettingsRowTitle(.generalAppearance, "Show favorites in compact mode")
-                    Text("Launch them with ⌘1–⌘5.")
-                }
-                .settingsEnabled(settings.compactMode)
+                WindowModeRow()
+                    .background {
+                        if !settings.compactMode {
+                            Color.clear.settingsAnchor(.generalCompactShortcuts)
+                        }
+                    }
                 Toggle(isOn: $settings.openOnCursorScreen) {
                     SettingsRowTitle(.generalAppearance, "Follow the cursor across displays")
                 }
                 Toggle(isOn: $settings.paletteDraggable) {
-                    SettingsRowTitle(.generalAppearance, "Drag to reposition")
-                    Text("Drag the strip above the search field.")
+                    SettingsRowTitle(.generalAppearance, "Drag to move the launcher")
+                    Text("Move the launcher by dragging the search bar.")
                 }
             } header: {
                 SettingsSectionHeader(.generalAppearance)
             }
 
-            Section {
-                Picker(selection: $settings.hyperKey) {
-                    ForEach(HyperKeyPhysicalKey.allCases) { key in
-                        Text(key.title).tag(key)
-                    }
-                } label: {
-                    SettingsRowTitle(.generalHyperKey, "Hyper Key")
-                    Text(hyperSubtitle)
-                }
-                .onChange(of: settings.hyperKey) { _, newKey in
-                    // A Quick Press choice is meaningless for a different key.
-                    settings.hyperKeyQuickPress = .none
-                    if newKey != .none { Permissions.ensureAccessibility() }
-                }
+            if settings.compactMode { CompactShortcutsSection() }
 
-                if hyperTap.status == .needsAccessibility {
-                    LabeledContent {
-                        Button("Grant Access…") { Permissions.openAccessibilitySettings() }
-                    } label: {
-                        Label(
-                            "Remapping needs Accessibility access.",
-                            systemImage: "exclamationmark.triangle"
-                        )
-                        .foregroundStyle(.orange)
-                    }
-                }
-
-                if settings.hyperKey.hasOriginalFunction {
-                    Picker(selection: $settings.hyperKeyQuickPress) {
-                        Text("Does Nothing").tag(HyperKeyQuickPress.none)
-                        if let original = settings.hyperKey.quickPressOriginalTitle {
-                            Text(original).tag(HyperKeyQuickPress.originalKey)
-                        }
-                        Text("Trigger Escape").tag(HyperKeyQuickPress.escape)
-                    } label: {
-                        SettingsRowTitle(.generalHyperKey, "Quick Press")
-                        Text("When \(settings.hyperKey.title) is pressed alone.")
-                    }
-                }
-
-                Toggle(isOn: $settings.hyperKeyIncludesShift) {
-                    SettingsRowTitle(.generalHyperKey, "Include Shift (⇧)")
-                }
-                // Flipping it re-points recorded chords, so it needs a chord to mean.
-                .settingsEnabled(settings.hyperKey != .none)
-            } header: {
-                SettingsSectionHeader(.generalHyperKey)
-            }
+            HyperKeySettingsSection()
 
             Section {
                 Picker(selection: $settings.calcNumberStyle) {
                     ForEach(CalcNumberStyle.allCases) { style in
                         let sample = core.regionNumberFormat.format(for: style).localized("1,234,567.89")
-                        Text("\(style.title) (\(sample))").tag(style)
+                        Text(verbatim: "\(style.title) (\(sample))").tag(style)
                     }
                 } label: {
                     SettingsRowTitle(.generalCalculator, "Number format")
-                    Text("With a decimal comma, ; separates arguments.")
+                    Text("With a decimal comma, use ; to separate arguments.")
                 }
             } header: {
                 SettingsSectionHeader(.generalCalculator)
             }
 
             Section {
+                Toggle(isOn: $settings.launcherShowsSuggestions) {
+                    SettingsRowTitle(.generalSearch, "Show suggestions")
+                    Text("Shows your most-used items when the search field is empty.")
+                }
+                Picker(selection: $settings.rootSearchSensitivity) {
+                    ForEach(SearchSensitivity.allCases) { sensitivity in
+                        Text(sensitivity.title).tag(sensitivity)
+                    }
+                } label: {
+                    SettingsRowTitle(.generalSearch, "Search sensitivity")
+                    Text("A lower value allows less exact matches.")
+                }
                 LabeledContent {
                     Button("Reset…", role: .destructive) {
                         confirmingRankingReset = true
@@ -176,6 +141,8 @@ struct GeneralSettingsView: View {
             } header: {
                 SettingsSectionHeader(.generalSearch)
             }
+
+            AllowedDeepLinksSection()
         }
         .formStyle(.grouped)
         .settingsScrollTarget(.general)
@@ -205,6 +172,76 @@ struct GeneralSettingsView: View {
     }
 }
 
+private struct WindowModeRow: View {
+    @Environment(AppSettings.self) private var settings
+
+    private static let preview = CGSize(width: 135, height: 80)
+
+    var body: some View {
+        SettingsRow(
+            title: "Window mode",
+            subtitle: String(localized: "Choose how the launcher opens."),
+            subtitleLineLimit: 2, alignment: .top, anchor: .generalAppearance
+        ) {
+            HStack(spacing: Theme.Spacing.md) {
+                option(String(localized: "Compact"), image: "WindowModeCompact", compact: true)
+                option(String(localized: "Expanded"), image: "WindowModeExpanded", compact: false)
+            }
+        }
+    }
+
+    private func option(_ title: String, image: String, compact: Bool) -> some View {
+        let selected = settings.compactMode == compact
+        return Button {
+            settings.compactMode = compact
+        } label: {
+            VStack(spacing: Theme.Spacing.xs) {
+                Image(image)
+                    .resizable()
+                    .scaledToFit()
+                    .frame(width: Self.preview.width, height: Self.preview.height)
+                    .clipShape(
+                        RoundedRectangle(cornerRadius: Theme.Radius.barControl, style: .continuous)
+                    )
+                    .saturation(selected ? 1 : 0)
+                Text(title)
+                    .font(.caption)
+                    .fontWeight(selected ? .semibold : .regular)
+                    .foregroundStyle(selected ? Color.primary : Color.secondary)
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(WindowModeButtonStyle())
+        .accessibilityLabel(title)
+        .accessibilityAddTraits(selected ? [.isSelected] : [])
+    }
+}
+
+private struct WindowModeButtonStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        PressedLabel(configuration: configuration)
+    }
+
+    private struct PressedLabel: View {
+        let configuration: ButtonStyle.Configuration
+        @State private var showsPressed = false
+
+        var body: some View {
+            configuration.label
+                .opacity(showsPressed ? 0.7 : 1)
+                .task(id: configuration.isPressed) {
+                    if configuration.isPressed {
+                        try? await Task.sleep(for: .milliseconds(20))
+                        guard !Task.isCancelled else { return }
+                        showsPressed = true
+                    } else {
+                        showsPressed = false
+                    }
+                }
+        }
+    }
+}
+
 /// Three glyph steps read as a legend; a true-to-scale "Aa" would look identical at 1.1.
 private struct InterfaceSizeRow: View {
     @Environment(AppSettings.self) private var settings
@@ -216,10 +253,10 @@ private struct InterfaceSizeRow: View {
     var body: some View {
         SettingsRow(
             title: "Interface size",
-            subtitle: "Scales the launcher and its panels, not Settings.",
+            subtitle: String(localized: "Resizes the launcher and its panels, but not Settings."),
             anchor: .generalAppearance
         ) {
-            HStack(spacing: Theme.Spacing.xxs) {
+            HStack(spacing: Theme.Spacing.xs) {
                 ForEach(InterfaceSize.allCases) { size in
                     segment(size)
                 }
@@ -229,66 +266,17 @@ private struct InterfaceSizeRow: View {
 
     private func segment(_ size: InterfaceSize) -> some View {
         let selected = settings.interfaceSize == size
-        let shape = RoundedRectangle(cornerRadius: Theme.Radius.barControl, style: .continuous)
         return Button {
             settings.interfaceSize = size
         } label: {
-            Text("Aa")
+            Text(verbatim: "Aa")
                 .font(.system(size: Self.glyph[size] ?? 13, weight: .medium))
                 .foregroundStyle(selected ? Color.primary : Color.secondary)
-                .frame(width: Theme.Size.interfaceSizeSegment, height: Theme.Size.settingsSearchField)
-                // Without this only the glyphs take the click, not the segment around them.
-                .contentShape(shape)
-                .background(shape.fill(selected ? Theme.Colors.controlSurface : Color.clear))
+                .settingsOptionSegment(isSelected: selected)
         }
         .buttonStyle(.plain)
         .accessibilityLabel(size.title)
         .accessibilityAddTraits(selected ? [.isSelected] : [])
         .help(size.title)
-    }
-}
-
-private struct PaletteTransparencyRow: View {
-    @Environment(AppSettings.self) private var settings
-    @State private var draft: Double?
-    @State private var isEditing = false
-
-    private var value: Binding<Double> {
-        Binding(
-            get: { draft ?? Double(settings.paletteTransparency) },
-            set: { value in
-                if isEditing {
-                    draft = value
-                } else {
-                    settings.paletteTransparency = Int(value)
-                }
-            })
-    }
-
-    var body: some View {
-        SettingsRow(title: "Background transparency", anchor: .generalAppearance) {
-            Slider(
-                value: value, in: -100...100, step: 50, neutralValue: 0,
-                label: { EmptyView() },
-                minimumValueLabel: { Text("Less") },
-                maximumValueLabel: { Text("More") },
-                tick: { SliderTick($0) },
-                onEditingChanged: { editing in
-                    isEditing = editing
-                    if !editing, let draft {
-                        settings.paletteTransparency = Int(draft)
-                        self.draft = nil
-                    }
-                }
-            )
-            .labelsHidden()
-            .accessibilityLabel("Background transparency")
-            .frame(width: Theme.Size.paletteTransparencySlider)
-            Button("Reset") {
-                draft = nil
-                settings.paletteTransparency = 0
-            }
-            .help("Restore the default background in Light and Dark.")
-        }
     }
 }

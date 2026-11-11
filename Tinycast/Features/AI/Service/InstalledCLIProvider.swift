@@ -1,15 +1,18 @@
 import Foundation
+import UniformTypeIdentifiers
 
 struct InstalledCLIProvider: AIProvider {
     private let runner: InstalledCLITurnRunner
 
     @MainActor
     init(
-        kind: InstalledAIKind, executable: URL?, model: String, effort: String?, workspace: URL
+        kind: InstalledAIKind, executable: URL?, model: String, effort: String?, workspace: URL,
+        launch: InstalledAILaunch = InstalledAILaunch(), toolServers: AIToolServerSession? = nil,
+        toolSession: AIToolSession? = nil
     ) {
         runner = InstalledCLITurnRunner(
             kind: kind, executable: executable, model: model, effort: effort,
-            workspace: workspace)
+            workspace: workspace, launch: launch, toolServers: toolServers, toolSession: toolSession)
     }
 
     func stream(_ request: AIRequest) -> AIProviderStream {
@@ -24,13 +27,12 @@ private final class InstalledCLITurnRunner {
         environment, access external resources, or modify anything. Use only the conversation and \
         instructions in this request.
         """
-    private static let openCodeConfiguration = """
-        {"permission":"deny","share":"disabled","agent":{"build":{"permission":"deny"},\
-        "plan":{"permission":"deny"}}}
+    private static let toolSafetyInstructions = """
+        You are generating text inside Tinycast. The only tools you may use are the MCP tools \
+        supplied with this request, and you may use them for anything they offer. Do not run \
+        commands, read files, inspect the environment, access external resources, or modify \
+        anything except through them.
         """
-
-    private static let claudeManagedMCPConfig =
-        "/Library/Application Support/ClaudeCode/managed-mcp.json"
 
     private static var maximumPartialLineBytes: Int {
         if let raw = ProcessInfo.processInfo.environment["TC_INSTALLED_MAX_LINE_BYTES"],
@@ -48,6 +50,10 @@ private final class InstalledCLITurnRunner {
     private let model: String
     private let effort: String?
     private let workspace: URL
+    private let launch: InstalledAILaunch
+    private let toolServers: AIToolServerSession?
+    private let toolSession: AIToolSession?
+    private var bridge: OpenCodeMCPBridge?
 
     private var token: TurnToken?
     private var process: Process?
@@ -55,17 +61,31 @@ private final class InstalledCLITurnRunner {
     private var outputBuffer = Data()
     private var errorBuffer = Data()
     private var turnSessionID: String?
-    private var promptFileURL: URL?
+    /// Every file is the turn's own and private: its prompt, its MCP secrets, its pictures.
+    private var privateFiles: [URL] = []
     private var activeExecutable: URL?
+    /// What this turn armed, empty on every route and every turn that offers no server.
+    private var activeServers: [AIToolServer] = []
+    private var exitStatus: Int32?
+    private var outputClosed = false
+    private var input: FileHandle?
+    private var consents: [Task<Void, Never>] = []
+    /// Chained rather than concurrent: two writes racing the same pipe would interleave a line.
+    private var writes: Task<Void, Never> = Task {}
 
     init(
-        kind: InstalledAIKind, executable: URL?, model: String, effort: String?, workspace: URL
+        kind: InstalledAIKind, executable: URL?, model: String, effort: String?, workspace: URL,
+        launch: InstalledAILaunch, toolServers: AIToolServerSession? = nil,
+        toolSession: AIToolSession? = nil
     ) {
         self.kind = kind
+        self.launch = launch
         configuredExecutable = executable
         self.model = model
         self.effort = effort
         self.workspace = workspace
+        self.toolServers = toolServers
+        self.toolSession = kind == .openCode ? toolSession : nil
     }
 
     nonisolated func stream(_ request: AIRequest) -> AIProviderStream {
@@ -86,25 +106,43 @@ private final class InstalledCLITurnRunner {
     ) async {
         guard kind != .codex else {
             continuation.finish(
-                throwing: AIProviderError.unavailable("Codex requires its app-server adapter."))
+                throwing: AIProviderError.unavailable(
+                    String(localized: "Codex requires its app-server adapter.")))
             return
         }
-        guard let prompt = prompt(for: request) else {
+        guard
+            request.messages.contains(where: {
+                $0.role == .user
+                    && (!$0.images.isEmpty
+                        || !$0.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            })
+        else {
             continuation.finish(
-                throwing: AIProviderError.unavailable("There is no user message to send."))
+                throwing: AIProviderError.unavailable(
+                    String(localized: "There is no user message to send.")))
             return
         }
         let resolvedExecutable: URL?
-        if let configuredExecutable {
-            resolvedExecutable = configuredExecutable
-        } else {
-            resolvedExecutable = await ExecutableLocator.locate(
-                kind.command, extraHomePaths: kind.extraExecutablePaths)
+        switch launch.command() {
+        case .executable(let url):
+            resolvedExecutable = url
+        case .missing(let path):
+            continuation.finish(
+                throwing: AIProviderError.unavailable(
+                    InstalledAILaunch.missingCommandMessage(path)))
+            return
+        case .automatic:
+            if let configuredExecutable {
+                resolvedExecutable = configuredExecutable
+            } else {
+                resolvedExecutable = await ExecutableLocator.locate(
+                    kind.command, extraHomePaths: kind.extraExecutablePaths)
+            }
         }
         guard let executable = resolvedExecutable else {
             continuation.finish(
                 throwing: AIProviderError.unavailable(
-                    "Install " + kind.title + " before using this model."))
+                    String(localized: "Install \(kind.title) before using this model.")))
             return
         }
         if Task.isCancelled {
@@ -119,8 +157,79 @@ private final class InstalledCLITurnRunner {
         } catch {
             continuation.finish(
                 throwing: AIProviderError.unavailable(
-                    "Tinycast could not prepare its private AI workspace."))
+                    String(localized: "Tinycast could not prepare its private AI workspace.")))
             return
+        }
+
+        activeServers = await resolvedToolServers()
+        let prompt = prompt(for: request)
+        let images = request.messages.last { $0.role == .user }?.images ?? []
+        var files: [URL] = []
+        var configURL: URL?
+        if !activeServers.isEmpty {
+            let url = workspace.appending(path: ClaudeMCPLaunch.configurationFileName())
+            do {
+                try await Self.writePrivateFile(
+                    Data(ClaudeMCPLaunch.configuration(servers: activeServers).utf8), to: url)
+            } catch {
+                try? FileManager.default.removeItem(at: url)
+                activeServers = []
+                continuation.finish(
+                    throwing: AIProviderError.unavailable(
+                        String(localized: "Tinycast could not write its private MCP configuration.")))
+                return
+            }
+            configURL = url
+            files.append(url)
+        }
+        var grokPrompt: URL?
+        if kind == .grok {
+            let url = workspace.appending(path: "tinycast-prompt-\(UUID().uuidString).txt")
+            do {
+                try await Self.writePrivateFile(Data(prompt.utf8), to: url)
+            } catch {
+                try? FileManager.default.removeItem(at: url)
+                continuation.finish(
+                    throwing: AIProviderError.unavailable(
+                        String(localized: "Tinycast could not write its private AI prompt.")))
+                return
+            }
+            grokPrompt = url
+            files.append(url)
+        }
+        var attachments: [URL] = []
+        if kind == .openCode, !images.isEmpty {
+            do {
+                attachments = try await Self.writeAttachments(images, in: workspace)
+            } catch {
+                continuation.finish(
+                    throwing: AIProviderError.unavailable(
+                        String(localized: "Tinycast could not write its private image attachments.")))
+                return
+            }
+            files += attachments
+        }
+
+        var bridge: OpenCodeMCPBridge?
+        var openCodeConfiguration: String?
+        defer {
+            if self.bridge !== bridge { bridge?.stop() }
+        }
+        if let toolSession, !toolSession.tools.isEmpty {
+            let connection = OpenCodeMCPBridge(session: toolSession) { event in
+                continuation.yield(event)
+            } failure: { [weak self] message in
+                guard self?.token === token else { return }
+                self?.fail(message)
+            }
+            bridge = connection
+            do {
+                openCodeConfiguration = try await connection.start()
+            } catch {
+                Self.remove(files)
+                continuation.finish(throwing: error)
+                return
+            }
         }
 
         let process = Process()
@@ -130,29 +239,21 @@ private final class InstalledCLITurnRunner {
         process.executableURL = executable
         process.currentDirectoryURL = workspace
         process.environment = environment(for: executable)
-        var grokPrompt: URL?
-        if kind == .grok {
-            let url = workspace.appending(path: "tinycast-prompt-\(UUID().uuidString).txt")
-            do {
-                try await Self.writePromptFile(prompt, to: url)
-            } catch {
-                try? FileManager.default.removeItem(at: url)
-                continuation.finish(
-                    throwing: AIProviderError.unavailable(
-                        "Tinycast could not write its private AI prompt."))
-                return
-            }
-            grokPrompt = url
-            process.standardInput = FileHandle.nullDevice
-        } else {
-            process.standardInput = stdin
+        if let openCodeConfiguration {
+            process.environment?["OPENCODE_CONFIG_CONTENT"] = openCodeConfiguration
         }
-        process.arguments = arguments(promptFile: grokPrompt)
+        process.standardInput = kind == .grok ? FileHandle.nullDevice : stdin
+        process.arguments = arguments(
+            promptFile: grokPrompt, mcpConfig: configURL, attachments: attachments)
         process.standardOutput = stdout
         process.standardError = stderr
         stdout.fileHandleForReading.readabilityHandler = { [weak self] handle in
             let data = handle.availableData
-            guard !data.isEmpty else { return }
+            guard !data.isEmpty else {
+                handle.readabilityHandler = nil
+                Task { @MainActor in self?.didCloseOutput(token: token) }
+                return
+            }
             Task { @MainActor in self?.consume(data, token: token) }
         }
         stderr.fileHandleForReading.readabilityHandler = { [weak self] handle in
@@ -169,7 +270,7 @@ private final class InstalledCLITurnRunner {
             stdout.fileHandleForReading.readabilityHandler = nil
             stderr.fileHandleForReading.readabilityHandler = nil
             process.terminationHandler = nil
-            if let grokPrompt { try? FileManager.default.removeItem(at: grokPrompt) }
+            Self.remove(files)
             continuation.finish(throwing: CancellationError())
             return
         }
@@ -179,64 +280,135 @@ private final class InstalledCLITurnRunner {
             stdout.fileHandleForReading.readabilityHandler = nil
             stderr.fileHandleForReading.readabilityHandler = nil
             process.terminationHandler = nil
-            if let grokPrompt { try? FileManager.default.removeItem(at: grokPrompt) }
+            Self.remove(files)
             continuation.finish(
                 throwing: AIProviderError.responseFailed(
-                    kind.title + " could not start: " + error.localizedDescription))
+                    String(localized: "\(kind.title) could not start: \(error.localizedDescription)")))
             return
         }
-        promptFileURL = grokPrompt
+        privateFiles = files
         self.process = process
+        self.bridge = bridge
         activeExecutable = executable
         self.token = token
+        exitStatus = nil
+        outputClosed = false
         self.continuation = continuation
         guard kind != .grok else { return }
-        // A prompt past the pipe buffer blocks until the child drains it, so never on the main actor.
-        let input = stdin.fileHandleForWriting
-        Task.detached {
-            try? input.write(contentsOf: Data(prompt.utf8))
-            try? input.close()
+        input = stdin.fileHandleForWriting
+        // A child that exits before reading must fail the write, not SIGPIPE Tinycast.
+        _ = fcntl(stdin.fileHandleForWriting.fileDescriptor, F_SETNOSIGPIPE, 1)
+        guard kind == .claude else {
+            write(Data(prompt.utf8), closing: true)
+            return
+        }
+        // Framed as JSON, so a picture rides beside the text as a content block.
+        guard let line = ClaudeControlProtocol.userMessage(prompt, images: images) else {
+            fail(String(localized: "Tinycast could not frame the request for \(kind.title)."))
+            return
+        }
+        // A tool loop answers on the same pipe, so an armed turn keeps stdin open for it.
+        write(line, closing: activeServers.isEmpty)
+    }
+
+    /// A pipe write past the buffer blocks until the child drains it, so never on the main actor.
+    private func write(_ data: Data, closing: Bool) {
+        guard let input else { return }
+        if closing { self.input = nil }
+        let previous = writes
+        writes = Task.detached {
+            await previous.value
+            try? input.write(contentsOf: data)
+            if closing { try? input.close() }
         }
     }
 
-    nonisolated private static func writePromptFile(_ prompt: String, to url: URL) async throws {
+    /// Created `0600`: `createFile` writes a `0644` temporary first and restricts it after.
+    nonisolated private static func writePrivateFile(_ data: Data, to url: URL) async throws {
         try await Task.detached {
-            try Data(prompt.utf8).write(to: url)
+            let descriptor = open(url.path, O_WRONLY | O_CREAT | O_EXCL, 0o600)
+            guard descriptor >= 0 else { throw CocoaError(.fileWriteUnknown) }
+            let file = FileHandle(fileDescriptor: descriptor, closeOnDealloc: true)
+            try file.write(contentsOf: data)
+            try file.close()
         }.value
     }
 
-    private func arguments(promptFile: URL? = nil) -> [String] {
+    /// OpenCode reads an image's type from its file extension.
+    nonisolated private static func writeAttachments(
+        _ images: [AIImage], in workspace: URL
+    ) async throws -> [URL] {
+        var urls: [URL] = []
+        do {
+            for image in images {
+                let ext = UTType(mimeType: image.mimeType)?.preferredFilenameExtension ?? "png"
+                let url = workspace.appending(path: "tinycast-image-\(UUID().uuidString).\(ext)")
+                urls.append(url)
+                try await writePrivateFile(image.data, to: url)
+            }
+        } catch {
+            remove(urls)
+            throw error
+        }
+        return urls
+    }
+
+    nonisolated private static func remove(_ urls: [URL]) {
+        for url in urls { try? FileManager.default.removeItem(at: url) }
+    }
+
+    /// What this turn may offer: nothing at all unless the route is Claude and MCP armed it.
+    private func resolvedToolServers() async -> [AIToolServer] {
+        guard kind == .claude, let toolServers, !InstalledAIManager.hasManagedMCPPolicy else {
+            return []
+        }
+        return await toolServers.servers()
+    }
+
+    /// Nothing to call is one request; an armed turn takes the reader's cap, which may be none.
+    private var roundCap: Int? { activeServers.isEmpty ? 1 : toolServers?.rounds }
+
+    private func arguments(promptFile: URL?, mcpConfig: URL?, attachments: [URL]) -> [String] {
         switch kind {
         case .claude:
             var result = [
                 "-p",
                 "--model", model,
-                "--input-format", "text",
+                "--input-format", "stream-json",
                 "--output-format", "stream-json",
+                // A `-p` run omits thinking text unless a display is named; the setting is ignored.
+                "--thinking-display", "summarized",
                 "--verbose",
                 "--include-partial-messages",
                 "--no-session-persistence",
                 "--disable-slash-commands",
                 "--tools", "",
-                "--disallowedTools", "*",
                 // `--bare` is not among these: it refuses the OAuth sign-in this whole route reuses.
                 "--no-chrome",
-                "--max-turns", "1",
-                "--system-prompt", Self.safetyInstructions
+                "--system-prompt",
+                mcpConfig == nil ? Self.safetyInstructions : Self.toolSafetyInstructions
             ]
-            // The CLI rejects both flags while an admin's managed MCP policy is installed.
-            if !FileManager.default.fileExists(atPath: Self.claudeManagedMCPConfig) {
-                result += ["--strict-mcp-config", "--mcp-config", #"{"mcpServers":{}}"#]
+            if let mcpConfig {
+                result += ClaudeMCPLaunch.arguments(
+                    configurationPath: mcpConfig.path, handles: activeServers.map(\.handle),
+                    rounds: roundCap)
+            } else {
+                // A route with nothing to call keeps every tool off and the turn to one request.
+                result += ["--disallowedTools", "*", "--max-turns", "1"]
+                result += InstalledAIManager.claudeWithoutMCPArguments
             }
             if let effort { result += ["--effort", effort] }
             return result
         case .openCode:
-            var result = [
-                "run", "--pure", "--format", "json", "--model", model,
-                "--dir", workspace.path, "--title", "Tinycast"
-            ]
-            if let effort { result += ["--variant", effort] }
-            return result
+            return [
+                "run", "--standalone",
+                "--format", "json",
+                "--thinking",
+                "--agent", InstalledAIKind.openCodeAgent,
+                "--model", effort.map { model + "#" + $0 } ?? model,
+                // A set title spares the turn a second model call to name its session.
+                "--title", "Tinycast"
+            ] + attachments.flatMap { ["--file", $0.path] }
         case .grok:
             var result = [
                 "--prompt-file", promptFile?.path ?? "",
@@ -274,39 +446,19 @@ private final class InstalledCLITurnRunner {
         }
     }
 
+    /// OpenCode takes its directory from `PWD` ahead of the real working directory.
     private func environment(for executable: URL) -> [String: String] {
-        let inheritedPath = ProcessInfo.processInfo.environment["PATH"] ?? "/usr/bin:/bin"
-        var result = ProcessInfo.processInfo.environment.merging(
-            [
-                "NO_COLOR": "1",
-                "PATH": executable.deletingLastPathComponent().path + ":" + inheritedPath
-            ]
-        ) { _, value in value }
-        switch kind {
-        case .claude:
-            result["CLAUDE_CODE_SKIP_PROMPT_HISTORY"] = "1"
-            result["ENABLE_CLAUDEAI_MCP_SERVERS"] = "false"
-        case .openCode:
-            result["OPENCODE_CONFIG_CONTENT"] = Self.openCodeConfiguration
-            result["OPENCODE_AUTO_SHARE"] = "false"
-            result["OPENCODE_DISABLE_AUTOUPDATE"] = "true"
-        case .grok:
-            result["GROK_DISABLE_AUTOUPDATER"] = "1"
-            result["GROK_AGENT_DASHBOARD"] = "0"
-        case .cursor, .codex:
-            break
-        }
-        return result
+        ExecutableLocator.environment(
+            running: executable, adding: ["PWD": workspace.path],
+            inherited: launch.inherited(for: kind)
+        ).merging(kind.managedEnvironment) { _, managed in managed }
     }
 
-    private func prompt(for request: AIRequest) -> String? {
-        guard
-            request.messages.contains(where: {
-                $0.role == .user
-                    && !$0.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-            })
-        else { return nil }
-        var sections = [Self.safetyInstructions]
+    private func prompt(for request: AIRequest) -> String {
+        var sections = [
+            activeServers.isEmpty && toolSession?.tools.isEmpty != false
+                ? Self.safetyInstructions : Self.toolSafetyInstructions
+        ]
         if let instructions = request.instructions?.trimmingCharacters(in: .whitespacesAndNewlines),
             !instructions.isEmpty
         {
@@ -333,28 +485,73 @@ private final class InstalledCLITurnRunner {
         while let newline = outputBuffer.firstIndex(of: 0x0A) {
             let line = outputBuffer[..<newline]
             if line.count > Self.maximumPartialLineBytes {
-                fail(kind.title + " returned an oversized response.")
+                fail(String(localized: "\(kind.title) returned an oversized response."))
                 return
             }
             outputBuffer.removeSubrange(...newline)
             guard !line.isEmpty else { continue }
-            apply(InstalledAIStreamDecoder.decode(Data(line), kind: kind))
+            apply(
+                InstalledAIStreamDecoder.decode(
+                    Data(line), kind: kind, servers: activeServers), token: token)
         }
         if outputBuffer.count > Self.maximumPartialLineBytes {
-            fail(kind.title + " returned an oversized response.")
+            fail(String(localized: "\(kind.title) returned an oversized response."))
         }
     }
 
-    private func apply(_ frame: InstalledAIStreamFrame) {
+    private func apply(_ frame: InstalledAIStreamFrame, token: TurnToken) {
         if let sessionID = frame.sessionID { turnSessionID = sessionID }
+        if let request = frame.controlRequest {
+            answer(request, token: token)
+            return
+        }
+        if let id = frame.unsupportedRequestID {
+            let refusal = "Tinycast does not answer this request."
+            if let line = ClaudeControlProtocol.error(to: id, message: refusal) {
+                write(line, closing: false)
+            }
+            return
+        }
         for event in frame.events { continuation?.yield(event) }
-        if let error = frame.error {
+        if frame.stoppedAtRoundCap {
+            fail(
+                roundCap.map { String(localized: "Stopped after \($0) rounds of tool calls.") }
+                    ?? String(localized: "\(kind.title) could not finish the response."))
+        } else if let error = frame.error {
             fail(error)
         } else if frame.completed {
-            continuation?.yield(.finished)
-            continuation?.finish()
-            continuation = nil
+            finish()
+            // A stream-json turn is answered; closing stdin is what lets the child leave.
+            write(Data(), closing: true)
         }
+    }
+
+    private func finish() {
+        bridge?.stop()
+        continuation?.yield(.finished)
+        continuation?.finish()
+        continuation = nil
+    }
+
+    /// The reader's decision, through the same trust policy and dialog the BYOK loop asks with.
+    private func answer(_ request: ClaudeControlProtocol.Request, token: TurnToken) {
+        consents.append(
+            Task { [weak self] in
+                let allowed = await self?.toolServers?.consent(request.call) ?? false
+                guard let self, self.token === token else { return }
+                guard
+                    let line = ClaudeControlProtocol.response(
+                        to: request, allowed: allowed,
+                        message: "The user declined this tool call.")
+                else { return }
+                self.write(line, closing: false)
+            })
+    }
+
+    /// A question still waiting its turn belongs to a turn that is over, so it is never asked.
+    private func cancelConsents() {
+        for consent in consents { consent.cancel() }
+        consents = []
     }
 
     private func consumeError(_ data: Data, token: TurnToken) {
@@ -365,13 +562,28 @@ private final class InstalledCLITurnRunner {
 
     private func didExit(status: Int32, token: TurnToken) {
         guard self.token === token else { return }
-        if continuation != nil {
+        exitStatus = status
+        // Its last line can still be in the pipe, and that line may be the answer.
+        guard !kind.finishesAtExit || outputClosed else { return }
+        settle(status)
+    }
+
+    private func didCloseOutput(token: TurnToken) {
+        guard self.token === token else { return }
+        outputClosed = true
+        if let exitStatus { settle(exitStatus) }
+    }
+
+    private func settle(_ status: Int32) {
+        if status == 0, kind.finishesAtExit {
+            finish()
+        } else if continuation != nil {
             let detail = (String(bytes: errorBuffer, encoding: .utf8) ?? "")
                 .replacingOccurrences(
                     of: "\u{001B}\\[[0-9;]*[A-Za-z]", with: "", options: .regularExpression
                 )
                 .trimmingCharacters(in: .whitespacesAndNewlines)
-            let fallback = kind.title + " exited with status " + String(status) + "."
+            let fallback = String(localized: "\(kind.title) exited with status \(status).")
             fail(detail.isEmpty ? fallback : detail)
         }
         deleteTurnSession()
@@ -379,6 +591,7 @@ private final class InstalledCLITurnRunner {
     }
 
     private func fail(_ message: String) {
+        bridge?.stop()
         continuation?.finish(throwing: AIProviderError.responseFailed(message))
         continuation = nil
         process?.terminate()
@@ -390,19 +603,20 @@ private final class InstalledCLITurnRunner {
     }
 
     private func cancelActiveTurn() {
+        bridge?.stop()
+        bridge = nil
+        cancelConsents()
         continuation?.finish(throwing: CancellationError())
         continuation = nil
         process?.terminate()
         outputBuffer.removeAll(keepingCapacity: false)
         errorBuffer.removeAll(keepingCapacity: false)
-        removePromptFile()
+        removePrivateFiles()
     }
 
-    private func removePromptFile() {
-        if let promptFileURL {
-            try? FileManager.default.removeItem(at: promptFileURL)
-        }
-        promptFileURL = nil
+    private func removePrivateFiles() {
+        Self.remove(privateFiles)
+        privateFiles = []
     }
 
     private func deleteTurnSession() {
@@ -413,7 +627,8 @@ private final class InstalledCLITurnRunner {
             guard let executable = activeExecutable else { return }
             let arguments =
                 kind == .grok
-                ? ["sessions", "delete", sessionID] : ["session", "delete", sessionID, "--pure"]
+                ? ["sessions", "delete", sessionID]
+                : ["session", "delete", sessionID, "--standalone"]
             let workspace = workspace
             let environment = environment(for: executable)
             Task.detached {
@@ -440,8 +655,7 @@ private final class InstalledCLITurnRunner {
         process.standardInput = FileHandle.nullDevice
         process.standardOutput = FileHandle.nullDevice
         process.standardError = FileHandle.nullDevice
-        try? process.run()
-        process.waitUntilExit()
+        try? process.runObservingExit().wait()
     }
 
     /// The CLI has no delete-chat; chats live under `~/.cursor/chats/<workspace>/<id>`.
@@ -466,6 +680,9 @@ private final class InstalledCLITurnRunner {
     }
 
     private func cleanup() {
+        bridge?.stop()
+        bridge = nil
+        cancelConsents()
         process?.terminationHandler = nil
         (process?.standardOutput as? Pipe)?.fileHandleForReading.readabilityHandler = nil
         (process?.standardError as? Pipe)?.fileHandleForReading.readabilityHandler = nil
@@ -475,7 +692,11 @@ private final class InstalledCLITurnRunner {
         outputBuffer.removeAll(keepingCapacity: false)
         errorBuffer.removeAll(keepingCapacity: false)
         turnSessionID = nil
-        removePromptFile()
+        exitStatus = nil
+        outputClosed = false
+        removePrivateFiles()
         activeExecutable = nil
+        activeServers = []
+        write(Data(), closing: true)
     }
 }

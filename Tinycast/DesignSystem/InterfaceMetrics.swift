@@ -31,6 +31,7 @@ struct InterfaceMetrics: Equatable, Sendable {
         var emojiSectionSpacing: CGFloat { scaledPoints(Theme.Spacing.emojiSectionSpacing, scale) }
         var chatTranscriptBottom: CGFloat { scaledPoints(Theme.Spacing.chatTranscriptBottom, scale) }
         var chatFollowTailSlack: CGFloat { scaledPoints(Theme.Spacing.chatFollowTailSlack, scale) }
+        var chatLine: CGFloat { scaledPoints(Theme.Spacing.chatLine, scale) }
     }
 
     struct Radius: Equatable, Sendable {
@@ -38,6 +39,7 @@ struct InterfaceMetrics: Equatable, Sendable {
 
         var panel: CGFloat { scaledPoints(Theme.Radius.panel, scale) }
         var row: CGFloat { scaledPoints(Theme.Radius.row, scale) }
+        var formField: CGFloat { scaledPoints(Theme.Radius.formField, scale) }
         var emojiCell: CGFloat { scaledPoints(Theme.Radius.emojiCell, scale) }
         var menu: CGFloat { scaledPoints(Theme.Radius.menu, scale) }
         var menuRow: CGFloat { scaledPoints(Theme.Radius.menuRow, scale) }
@@ -49,6 +51,7 @@ struct InterfaceMetrics: Equatable, Sendable {
         var glyph: CGFloat { scaledPoints(Theme.Radius.glyph, scale) }
         var attachmentChip: CGFloat { scaledPoints(Theme.Radius.attachmentChip, scale) }
         var card: CGFloat { scaledPoints(Theme.Radius.card, scale) }
+        var codeBlock: CGFloat { scaledPoints(Theme.Radius.codeBlock, scale) }
         var keyCap: CGFloat { scaledPoints(Theme.Radius.keyCap, scale) }
         var tooltip: CGFloat { scaledPoints(Theme.Radius.tooltip, scale) }
     }
@@ -60,12 +63,15 @@ struct InterfaceMetrics: Equatable, Sendable {
         var panelHeight: CGFloat { scaledPoints(Theme.Size.panelHeight, scale) }
         var headerHeight: CGFloat { scaledPoints(Theme.Size.headerHeight, scale) }
         var headerIconSlot: CGFloat { scaledPoints(Theme.Size.headerIconSlot, scale) }
+        var searchFieldMinWidth: CGFloat { scaledPoints(Theme.Size.searchFieldMinWidth, scale) }
         var headerPadding: CGFloat { scaledPoints(Theme.Size.headerPadding, scale) }
         /// Derived, not scaled: the compact bar must stay exactly the header in symmetric slack.
         var compactHeight: CGFloat { headerHeight + headerPadding * 2 }
         var bottomBarHeight: CGFloat { scaledPoints(Theme.Size.bottomBarHeight, scale) }
+        var textAreaUnit: CGFloat { scaledPoints(Theme.Size.textAreaUnit, scale) }
         var barButtonHeight: CGFloat { scaledPoints(Theme.Size.barButtonHeight, scale) }
         var rowIcon: CGFloat { scaledPoints(Theme.Size.rowIcon, scale) }
+        var resultRowIcon: CGFloat { scaledPoints(Theme.Size.resultRowIcon, scale) }
         var colorDot: CGFloat { scaledPoints(Theme.Size.colorDot, scale) }
         var calendarBarWidth: CGFloat { scaledPoints(Theme.Size.calendarBarWidth, scale) }
         var calendarBarHeight: CGFloat { scaledPoints(Theme.Size.calendarBarHeight, scale) }
@@ -76,6 +82,9 @@ struct InterfaceMetrics: Equatable, Sendable {
         var checkbox: CGFloat { scaledPoints(Theme.Size.checkbox, scale) }
 
         var menuWidth: CGFloat { scaledPoints(Theme.Size.menuWidth, scale) }
+        var formMenuMinimumWidth: CGFloat { scaledPoints(Theme.Size.formMenuMinimumWidth, scale) }
+        var formMenuExtraRowsHeight: CGFloat { scaledPoints(Theme.Size.formMenuExtraRowsHeight, scale) }
+        var formFieldFocusStroke: CGFloat { scaledPoints(Theme.Size.formFieldFocusStroke, scale) }
         var actionMenuWidth: CGFloat { scaledPoints(Theme.Size.actionMenuWidth, scale) }
         var clipboardFilterMenuWidth: CGFloat { scaledPoints(Theme.Size.clipboardFilterMenuWidth, scale) }
         var fileSearchFilterMenuWidth: CGFloat { scaledPoints(Theme.Size.fileSearchFilterMenuWidth, scale) }
@@ -99,6 +108,8 @@ struct InterfaceMetrics: Equatable, Sendable {
         var markdownListMarker: CGFloat { scaledPoints(Theme.Size.markdownListMarker, scale) }
         var markdownQuoteBar: CGFloat { scaledPoints(Theme.Size.markdownQuoteBar, scale) }
         var chatMessageAction: CGFloat { scaledPoints(Theme.Size.chatMessageAction, scale) }
+        var chatSourceBadge: CGFloat { scaledPoints(Theme.Size.chatSourceBadge, scale) }
+        var chatJumpToLatest: CGFloat { scaledPoints(Theme.Size.chatJumpToLatest, scale) }
         var chatImageThumb: CGFloat { scaledPoints(Theme.Size.chatImageThumb, scale) }
         var chatAttachmentGlyph: CGFloat { scaledPoints(Theme.Size.chatAttachmentGlyph, scale) }
         var chatAttachmentThumb: CGFloat { scaledPoints(Theme.Size.chatAttachmentThumb, scale) }
@@ -113,6 +124,7 @@ struct InterfaceMetrics: Equatable, Sendable {
 
         var dialogCompactWidth: CGFloat { scaledPoints(Theme.Size.dialogCompactWidth, scale) }
         var dialogWidth: CGFloat { scaledPoints(Theme.Size.dialogWidth, scale) }
+        var dialogTextHeight: CGFloat { scaledPoints(Theme.Size.dialogTextHeight, scale) }
         var dialogButtonHeight: CGFloat {
             menuButton
                 - scaledPoints(Theme.Size.menuButton - Theme.Size.dialogButtonHeight, scale)
@@ -148,7 +160,7 @@ struct InterfaceMetrics: Equatable, Sendable {
         var headerIcon: Font {
             scale == 1
                 ? Theme.Typography.headerIcon
-                : .system(size: scaledPoints(18, scale), weight: .medium)
+                : .system(size: scaledPoints(Theme.Typography.headerIconSize, scale), weight: .medium)
         }
 
         var rowTitle: Font { font(Theme.Typography.rowTitle, .body) }
@@ -176,7 +188,17 @@ struct InterfaceMetrics: Equatable, Sendable {
         var menuShortcut: Font { font(Theme.Typography.menuShortcut, .callout) }
         var menuIcon: Font { font(Theme.Typography.menuIcon, .body) }
 
-        /// Composed like `Theme`'s own: the style carries the face, an explicit weight overrides it.
+        /// The AppKit twin of a text style, for text an `NSTextView` draws beside SwiftUI's own.
+        func textNSFont(
+            _ style: NSFont.TextStyle, weight: NSFont.Weight? = nil, monospaced: Bool = false
+        ) -> NSFont {
+            let base = nsFont(style)
+            if monospaced { return .monospacedSystemFont(ofSize: base.pointSize, weight: weight ?? .regular) }
+            guard let weight else { return base }
+            return .systemFont(ofSize: base.pointSize, weight: weight)
+        }
+
+        /// Like `Theme`'s own: the style carries the face, an explicit weight overrides it.
         private func font(
             _ base: Font, _ style: NSFont.TextStyle, _ weight: Font.Weight? = nil
         )
@@ -187,7 +209,7 @@ struct InterfaceMetrics: Equatable, Sendable {
             return weight.map(scaled.weight) ?? scaled
         }
 
-        /// Its own descriptor, so `.headline` stays Bold and `.caption2` Medium rather than lightening.
+        /// Its own descriptor, so `.headline` stays Bold and `.caption2` Medium, not lighter.
         private func nsFont(_ style: NSFont.TextStyle) -> NSFont {
             let base = NSFont.preferredFont(forTextStyle: style)
             guard scale != 1 else { return base }

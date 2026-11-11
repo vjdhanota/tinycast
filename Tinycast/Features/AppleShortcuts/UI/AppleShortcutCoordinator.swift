@@ -77,7 +77,7 @@ final class AppleShortcutCoordinator {
     private func removeReferences(toShortcutsMissingFrom live: [AppleShortcut]) {
         let keys =
             Array(aliases.aliases.keys) + favorites.keys + visibility.hiddenItemKeys
-            + ranking.records.map(\.itemKey)
+            + ranking.visits.keys
         let bound = Set(hotKeys.boundAppleShortcutIDs)
         let stale = AppleShortcut.staleIDs(referencedBy: keys, bound: bound, live: live)
         guard !stale.isEmpty else { return }
@@ -102,13 +102,13 @@ final class AppleShortcutCoordinator {
         guard settings.appleShortcutsEnabled else { return }
         // Focus goes back first: a shortcut usually acts on whatever the user was in.
         if paletteCoordinator.isVisible { paletteCoordinator.hidePalette() }
-        let name = name(of: id) ?? "Shortcut"
+        let name = name(of: id) ?? String(localized: "Shortcut")
         Task {
             do throws(AppleShortcutRunner.Failure) {
                 try await AppleShortcutRunner.run(id: id)
             } catch {
                 await core.showNotice(
-                    title: "Couldn’t Run \(name)", message: error.localizedDescription,
+                    title: String(localized: "Couldn’t Run \(name)"), message: error.localizedDescription,
                     symbol: AppleShortcut.sfSymbol, tone: .danger)
             }
         }

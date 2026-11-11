@@ -4,17 +4,31 @@
 
 - **`clipboardEnabled` ships on — the only feature switch that does.** Absence of the key therefore
   has to outrank a stored `false` in `AppSettings.init`, and off means fully off: the poller stops,
-  the SQLite file closes, the launcher command and its shortcut go, and Tab skips the screen.
+  the SQLite file closes, the launcher commands and their shortcuts go, and Tab skips the screen.
   `ClipboardCoordinator.applyEnabled()` is the single place that applies it.
-- **↵ and ⌘↵ are one swapped pair, and `ClipboardCoordinator.activate(_:inverted:)` is the only
-  place that reads which way round they sit.** `clipboardDefaultAction` names what ↵ does — paste
-  (the default) or copy — and ⌘↵ always does the other. ⌘1…⌘0 on a pin and a double-click go
+- **↵, ⌘↵ and ⌃⌘↵ trade places around one setting, and
+  `ClipboardDefaultAction.action(for:on:)` is the only place that says which chord runs what.**
+  Paste owns ↵, Copy ⌘↵ and Paste as Plain Text ⌃⌘↵; `clipboardDefaultAction` moves one to ↵ and
+  Paste takes the chord it left, so a Copy default keeps the ↵/⌘↵ swap it always had.
+  `ClipboardCoordinator.activate(_:chord:)` runs it, and ⌘1…⌘0 on a pin and a double-click go
   through the same call, so no surface can drift from the setting; ⌥↵ pastes regardless, since
-  keeping the window open is a paste-only idea. The ⌘K menu puts the default first with the ↵ chip.
+  keeping the window open is a paste-only idea. The ⌘K menu lists the three in chord order, which
+  puts the default first with the ↵ chip.
+- **Paste as Plain Text writes `ClipboardItem.plainText` and nothing else**: the text itself, or a
+  file entry's path without its `public.file-url`. An image has none, so it gets no plain row, a
+  plain-text default pastes it as it is, and ⌃⌘↵ on it falls back to ⌘↵ as on every other screen.
 - **Clipboard writes stamp a private `internalType` marker** so the poller skips Tinycast's own writes.
   If the writer and the poller ever disagree, the app re-captures its own pastes in a loop.
+- **Edit Entry rewrites a text entry in place and never adds one.** The id, pin and source app
+  stay; saving then copies it as Copy to Clipboard does, marker included, so the poller does not
+  record the edit a second time.
+- **Paste Sequentially never promotes, and its walk is frozen at the first press.** `PasteSequence`
+  keeps every entry's id, newest first, and resolves each against the live history, so a promotion
+  cannot repeat or skip an entry and a deleted one is passed over rather than pasted.
 - **`Model/ClipboardStore.swift` keeps to Foundation plus SQLite3 and no other app source**, so
   `clipboard-test` can compile it standalone. It uses `isolated deinit` for its SQLite teardown.
+- **An image capture keeps the generation from its pasteboard poll.** Clear History and store close
+  retire it across conversion and file writing; a stale capture inserts nothing and leaves no blob.
 - A database that cannot be opened is deleted and recreated. That is sound because a history is
   captured rather than authored, and there is no UI for an unavailable clipboard — `QuicklinkStore`
   deliberately does the opposite. It is **not** a licence to treat the file as disposable: it lives in
@@ -34,7 +48,10 @@
   about what counts as a colour or what it converts to.
 - **Recognized text is search metadata and nothing else.** It lives in its own `item_text` table,
   never on `ClipboardItem` and never in the resident window, so no surface can paste it, copy it,
-  or classify an entry by it. What an entry *is* still comes from the content that was captured.
+  or classify an entry by it. The one exception is Copy Text, which the reader invokes explicitly:
+  it extracts fresh in the helper and puts the text on the pasteboard — the `item_text` table
+  itself is still never copied from. What an entry *is* still comes from the content that was
+  captured.
 - **No recognition ever runs in the app process.** `ClipboardTextWorker` spawns one bundled
   `ClipboardTextHelper` per item and reaps it, which is the whole reason Vision's and PDFKit's
   allocations do not accumulate in Tinycast. The helper is handed a path and answers with text.
@@ -47,6 +64,12 @@ text-first poller records `IMG_1234.png` as prose. The read sits after the `inte
 sensitive-type guards, which stay unconditional — a secret must never be recorded whatever shape it
 arrives in. A bare screenshot carries no file URL and still falls through to the `.png`/`.tiff`
 branch untouched.
+
+**Rich text is the last resort.** A copy with no file URL, plain text or image, such as a web page's
+HTML-only Clipboard API write, is converted through `NSAttributedString`, RTF before HTML, and
+recorded as a plain text entry. It sits after the image branch because a browser's image copy
+carries an `<img>` fragment beside the pixels. The HTML importer runs WebKit on the main actor, so
+fragments over 256 KB are skipped to bound the stall.
 
 `ClipboardManager.fileURLs(on:volatileRoots:)` takes both the pasteboard and the roots as
 parameters, so `pasteboard-test` can drive an `NSPasteboard.withUniqueName()` and its own scratch
@@ -66,13 +89,18 @@ the cap, and even a rejected modern file URL suppresses the legacy filenames fal
 re-capturing Tinycast's own writes, every write stamps a private `internalType` marker on the
 pasteboard and the poller skips anything carrying it.
 
+A ⌘C Tinycast sends to read a selection can't carry that marker, since the other app writes it.
+`pauseCapture()` and `resumeCapture()` bracket that borrow instead: the poller skips every tick in
+between, and the restore's baseline keeps the copy from being recorded once it resumes.
+`TextInjector` refuses a second borrow while one is in flight, so the pause is never nested.
+
 `stop()` is the off switch: it drops the timer and the fast-user-switching observers, and clears the
 `isCapturing` flag that `prepareForTinycastPasteboardMutation` reads — so a paste Tinycast performs
 itself no longer drains the pasteboard into history either.
 
 Existing clips survive being switched off, since a history is captured rather than authored and
 nothing else can put it back. **Clear history stays live with the feature off** —
-`ClipboardCoordinator.clearHistory()` reopens the file, empties it and closes it again — so a reader
+`ClipboardCoordinator.clearHistory()` reopens the file, clears the unpinned rows and closes it again — so a reader
 who turns the feature off can still erase what it kept.
 
 ## Store
@@ -90,7 +118,20 @@ in-memory history).
 
 Image capture (TIFF→PNG re-encode + blob write) runs off the main actor via detached tasks; row
 inserts, original-text search, and pruning stay on the main actor.
-Image copy uses Foundation’s `mappedIfSafe` hint before publishing the original PNG and marker.
+Image copy uses Foundation’s `mappedIfSafe` hint before publishing the original PNG, its file URL
+and marker. The file URL is what a terminal pastes, as the path, since it ignores image data; there
+is deliberately no `.string`, which a rich text field would take over the image.
+
+**Tiles and previews decode a copy, not the blob.** A PNG can't decode partially, so a 64px tile of a
+6K screenshot cost its full bitmap. The first draw of an owned image has `ClipboardTextHelper` write
+the `ImageDerivative` copy it needs, 256px for a row or 1080px for the preview, to
+`images/.thumbnails/` (excluded from backup); later draws decode those. Without a readable copy, from a
+failed or timed-out helper or a size past 1080px, the original is decoded in the app as before.
+Copies are made and deleted on one serial `ImageDerivative.queue`, so a copy's delete waits out the
+copy in flight; the blob itself is still deleted at once. The helper's wait runs on that queue, off
+the cooperative pool, with a 10 s deadline and the caller's cancellation. `load` sweeps copies whose
+blob is gone, which a quit before the queue ran can leave. Copies are keyed by the blob's whole file
+name. An image outside `images/`, such as a Raycast import, never gets copies.
 
 **A backup reads the whole table, not `items`.** `forEachStoredItem(inDatabaseAt:)` is `nonisolated`
 and opens a second connection, because the resident window stops at 1000 rows while the table is
@@ -149,12 +190,14 @@ Recognition runs in a bundled `ClipboardTextHelper`, one item at a time, and Vis
 state leaves with it. The parent accepts at most 32 KB from the helper's output pipe, propagates
 cancellation, and terminates and reaps a helper that runs past 60 seconds. `ClipboardTextWorker`
 does its blocking read and wait on its own `DispatchQueue`, never the cooperative pool. No helper
-exists while text search is off or the queue is empty.
+exists while text search is off or the queue is empty — a Copy Text trigger is the exception: the
+helper is bundled either way, so an explicit extraction spawns one with the search switch off.
 
 Images include owned clipboard PNGs and referenced image files. Referenced PDFs use PDFKit's embedded
 text page by page, with Vision OCR for pages without text. Mixed text-and-scan documents therefore
 remain searchable; images embedded on a page that already has text are not separately OCR'd. All
-processing stays on this Mac. Extracted text is search metadata, never the value pasted or copied.
+processing stays on this Mac. Extracted text is search metadata, never the value pasted or
+copied — Copy Text below is the deliberate exception, a copy the reader asks for.
 
 The derived `item_text` table and its trigram FTS index persist metadata without adding extracted
 strings to `ClipboardItem` or loading them into the resident history. Original text/path search returns
@@ -179,11 +222,67 @@ is a completed attempt. Failed recognition, a locked or unreadable input and a h
 `item_text_failures` instead: up to three attempts 30 seconds apart, which never block another item.
 Success and deletion clear that state. Enabling text search resets failures and earlier empty
 attempts so they can be tried again, keeping recognized text that is not empty — so an empty input
-may be reprocessed on a later launch, but nothing retries forever inside one session. Long bitmaps
-are recognized in overlapping 2048-pixel tiles, with Vision's relative minimum text-height cutoff
-disabled so it cannot discard small text on a tall screenshot or page. A referenced file is read once
+may be reprocessed on a later launch, but nothing retries forever inside one session. Tall bitmaps
+are recognized in full-width 2048-pixel strips overlapping by 256 pixels, with Vision's relative
+minimum text-height cutoff disabled so it cannot discard small text on a tall screenshot or page.
+Strips never split a line across columns, and each keeps only the lines centred in its half of an
+overlap, so a line is read once and the text keeps its reading order. A referenced file is read once
 when it is indexed; editing it later does not refresh the historical search text. Backups carry the
 original content and references, and a restored entry is recognized again.
+
+## Copy Text from an image
+
+**Copy Text** extracts the text in the selected image entry and puts it on the pasteboard. One
+coordinator entry point, `ClipboardCoordinator.copyImageText(_:)`, sits behind both surfaces: the
+⌘K Actions-menu row and the **⇧⌘T** chord (which requires the expanded list, like the other row
+chords, and closes an open menu). `ClipboardItem.offersTextExtraction` is the one eligibility
+answer — a captured `.image` entry, or a `.file` entry whose kind is an image (a screenshot copied
+in Finder) — and it is never a PDF, which stays a background-indexing capability.
+
+The action closes the palette and shows a "Reading text…" progress pill, then stats the file off
+the main actor, since a stat on an unmounted volume can stall: a vanished referenced file raises the
+HUD every action on that row uses, and a pruned blob says "That image is no longer available." —
+the palette is already down, so a HUD is the only thing that can speak. `ClipboardTextWorker` then
+spawns the bundled helper: no Vision runs in the app process, nothing reads the `item_text` table,
+and nothing depends on the text-search switch, whose helper is bundled either way. The extracted
+text is written with `Paster.copyPlainText`, **unmarked**, so the copy enters history like Copy
+Path does, and the pill is replaced by the outcome — **Copied text**, **No text found** when the
+helper succeeded but recognized nothing, or **Couldn’t read the text** when it failed.
+
+Only one extraction is in flight: a second trigger cancels the first, whose helper is terminated
+and which reports nothing. A result never overwrites a newer copy — when the pasteboard's
+`changeCount` moved while the helper ran, the text is dropped and the pill says **Clipboard
+changed, text not copied**.
+
+The bounds are the indexer's, stated precisely: the helper truncates its output at 32,000 UTF-8
+bytes, so a text-dense scan can copy *partial* text under a success HUD, and an input over 32 MB
+extracts as empty and lands in **No text found**. The source row is not promoted — a copy is not a
+paste.
+
+## Edit an entry
+
+**Edit Entry** (⌘E, or its ⌘K row) opens a `.text` entry in a Tinycast dialog over the dimmed
+palette. A file entry never offers it, because its text is a path and rewriting it would repoint
+the row. `ClipboardEditField` is the dialog's accessory: a code-mode `FormTextArea`, since smart
+quotes or autocorrect would corrupt a token, at a fixed height that scrolls rather than grows the
+panel. ↵ starts a new line as in any editor, so ⌘↵ saves and Esc cancels —
+`DialogAccessory.acceptsLineBreaks` is what hands ↵ to the field. An input method's ↵ always commits
+its marked text, in every dialog.
+
+`ClipboardStore.updateText(_:of:)` rewrites the row's `text` under the same id, so the `items_au`
+trigger reindexes FTS and nothing else changes. `Paster.copy` then writes it marked and promotes it
+unless pinned, and the palette stays up with the row selected and scrolled into view, so ⌘V pastes
+the edit and so does ↵ on the row. A query or type filter that hides the edit is cleared; matching
+ones stay. The palette preserves the row through its query and filter observers, including a pin
+past the first row. An empty edit changes nothing. An entry deleted while open — by
+retention, say — is not brought back: `updateText` answers nil and the text goes on the pasteboard
+**unmarked**, entering history as a new copy rather than being lost. A row found by FTS past the
+resident window has no in-memory copy to replace, so the store drops its search memo instead.
+Database write failures throw instead of taking the deleted-entry path: the HUD reports the failure,
+and neither the clipboard nor the selection changes.
+An edit is held to `ClipboardStore.maxTextLength`, the same 32,000 characters capture records, so a
+longer one is refused with a HUD and nothing changes; past that, every later paste of the entry
+would reindex it on the main actor.
 
 ## Type filter
 
@@ -285,7 +384,7 @@ persisted as a `pinned_at` column on `items` —
 a stamp rather than a flag, because the Pinned section is ordered by _when you pinned_, not by
 recency.
 
-Pins change four things:
+Pins change five things:
 
 - **Order.** `search` returns pinned rows first — for the empty query and for FTS hits alike — under
   one "Pinned" section above the date buckets, in pin order with the oldest pin at the top, so a new
@@ -300,14 +399,22 @@ Pins change four things:
   the same) rather than dropping back into the date bucket it came from, which would scroll the list
   out from under the selection. It uses the same atomic timestamp and rowid update as `promote`.
 - **Retention.** Pruning skips pinned rows (`AND pinned_at IS NULL`), so a pin outlives the retention
-  window. "Clear History" still deletes everything.
+  window — and "Clear History" skips them on the same condition, so only `remove` drops a pin.
 - **Selection.** Pinning lifts a row out of its date bucket, so `ClipboardCoordinator.togglePinnedClip` moves the
   palette selection to the row's new index in the _current_ results and bumps `palette.followToken`,
   which is what makes the list scroll the highlight back into view.
+- **Landing.** A pin shapes the order, never the default selection. Every reset — opening the screen,
+  clearing the query, changing the type filter — lands on the newest clip below the Pinned section
+  (`ClipboardStore.landingIndex`), and the palette centres it so the pins stay in view above. A typed
+  query lands on its first match instead, pinned or not: the pins are results then, not a shelf.
 
 Pasting a pinned entry deliberately does **not** promote it: it holds its place in the Pinned
 section, so `promote` skips pinned rows instead of rewriting the row and its FTS entry for no
 visible change.
+
+Paste and Keep Window Open (⌥↵) does not promote any entry. The rows hold still under the
+selection, so ↓ then ⌥↵ pastes a run of entries in order. `Paster.write` therefore only writes the
+pasteboard; `paste` and `copy` promote after it, and `pasteInPlace` does not.
 
 The ten palette slots shared with launcher favorites address this visible Pinned block too. A slot
 uses the current query and type filter, so its first entry is the first visible pin; a missing slot is
@@ -339,7 +446,7 @@ returns false, the coordinator raises a HUD, and the row survives — history is
 happened, and the recorded path is still the answer to "where was it?". The preview says so in
 place, and the Path row keeps showing where the file used to be.
 
-`FilePreviewThumbnailer` is the row tile and the preview still. `QLThumbnailGenerator` is the only
+`FilePreviewThumbnail` is the row tile and the preview still. `QLThumbnailGenerator` is the only
 thing that renders a *content* thumbnail for any type — a video's poster frame, a PDF's first page
 — and with `representationTypes: .all` it falls back to the type icon itself, so every file paints
 something through one path. It copies `ImageThumbnail`'s shape exactly: two byte-bounded caches
@@ -369,8 +476,11 @@ Carrying file bytes would make a backup unbounded and defeat the point of refere
 
 ## Dragging out
 
-Every row is a drag source (`ClipDrag.swift`), so reaching another app costs one gesture instead of
-Reveal in Finder and a second drag. `ClipboardItem.dragPayload` says in what flavour: the file URL
+Every row is a drag source, so reaching another app costs one gesture instead of Reveal in Finder and
+a second drag. The press and the session are `onRowClick`'s `drag:` in
+`DesignSystem/Interaction/RowClick.swift`, shared with [File Search](file-search.md#dragging-out) and
+the launcher's [application rows](launcher.md#dragging-an-application-out); `ClipDrag.swift` is only
+what a clip hands over. `ClipboardItem.dragPayload` says in what flavour: the file URL
 for an image or a referenced file, a URL and its text for a link, plain text for the rest. It is
 derived and never persisted, like `textForm` beside it, and `textForm` stays the one answer to
 whether an entry is a link, so the drag and the type filter cannot disagree.
@@ -379,15 +489,15 @@ whether an entry is a link, so the drag and the type filter cannot disagree.
 **Copy, always. That is why the drag is AppKit and not `onDrag`.** `imagesDir` lives in Application
 Support, on the boot volume, which is the same volume as almost every drop target. A file-URL drag
 there defaults to a move, and a move carries the blob out of the history and strands its row. Only
-an `NSDraggingSource` can answer `sourceOperationMaskFor`, and `ClipDragView` answers `.copy` for
+an `NSDraggingSource` can answer `sourceOperationMaskFor`, and `RowPressView` answers `.copy` for
 every context. SwiftUI's `onDrag` takes an `NSItemProvider` and nothing else. A `.file` row is
 copy-only for the reverse reason: the path is the user's own file, and Tinycast must not move it.
 
 **It claims mouse-down, like `WindowDragHandle` does, because the hosting view eats the click
 first.** The overlay owns the whole press: select on the way down, activate on a double click, and
 start the session once the pointer passes 4pt of slop. A press that stays inside the slop was a
-click, which is why the handle takes `onSelect` and `onActivate` instead of sitting beside a tap
-gesture that would never fire. It declines the right button in `hitTest`, the mirror of what
+click, which is why the press takes `select` and `activate` instead of sitting beside a tap gesture
+that would never fire. It declines the right button in `hitTest`, the mirror of what
 `RightClickCatcher` does with the left one — an overlay that answers every event would sit on top of
 the actions catcher and silently swallow the menu.
 
@@ -402,8 +512,31 @@ tile, `cached` only and never `load`, because a decode on mouse-down stalls the 
 begins on. A link or a copy gets a drawn text tile. The dragging frame is sized to that image and
 centred on the cursor, since the row's own shape would stretch a thumbnail.
 
-**A landed drop hides the palette**, the ending a paste has, through `clipDropped()`. A cancelled
+**A landed drop hides the palette**, the ending a paste has, through `PaletteCoordinator.dragLanded()`
+— the one ending every draggable row shares. A cancelled
 drag leaves it up and animates back to the row it came from, so a drag that achieved nothing says
 so. The session outliving the panel is safe for the reason the player teardown above is delicate:
 `orderOut` leaves the SwiftUI tree mounted, and the pasteboard holds the payload from the moment the
 session begins.
+
+## Paste Sequentially
+
+A command, so it is bound in Settings ▸ Clipboard like any other. Each press pastes the next older
+entry — text, image or file — into `PaletteCoordinator.targetApp` through `Paster.pasteInPlace`:
+⌘V goes to that app's pid, and nothing is activated or promoted. An image or file gone from disk
+writes nothing, so the same press moves on to the next entry.
+
+**A press drains the poller before it writes**, through `prepareForTinycastPasteboardMutation`. A
+copy made inside the 0.5s poll interval would otherwise be overwritten unrecorded, and the walk
+would start one entry too old.
+
+**What keeps a walk going is the pasteboard count its own write left.** Any other count means the
+user copied since, and a pause of `PasteSequence.idleTimeout` (60s) since the last paste does the
+same; either starts the walk over from the newest entry. Past the oldest entry a press shows
+**Nothing left to paste** rather than wrapping. The pasteboard keeps the last entry pasted, as after
+any other Tinycast paste.
+
+**A press within `PasteSequence.settleInterval` (0.25s) of the last paste is dropped, not queued.**
+`pasteInPlace` writes the pasteboard at once and posts ⌘V 50ms later, and the target reads the
+pasteboard only when it handles that ⌘V. A press inside that gap would swap the pasteboard first:
+one entry pasted twice, another skipped. A queue would replay a held shortcut as a burst.

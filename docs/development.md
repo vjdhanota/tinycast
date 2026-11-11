@@ -6,10 +6,10 @@ verifying a change is [testing.md](testing.md).
 ## Requirements
 
 - macOS 26 or later (Liquid Glass).
-- Xcode 26 — it provides the SwiftUI macro plugin and the SDK.
+- Xcode 27 — it provides the SwiftUI macro plugin and the SDK.
 - [XcodeGen](https://github.com/yonaskolb/XcodeGen), and for linting:
   `brew install swiftlint`.
-- Node, for the generators and for the two stub servers `run-tests.sh` drives. It is the only
+- Node, for the generators and the local test stub servers `run-tests.sh` drives. It is the only
   scripting runtime here — building the app still needs none of it.
 
 ## First-time setup
@@ -45,13 +45,20 @@ The app target builds and embeds `ClipboardTextHelper` under `Contents/Helpers`,
 Build the app scheme to include it; copying only the main executable omits OCR support. The helper's
 executable name stays fixed even when release builds override the app's product name for a channel.
 
+Dictation similarly embeds its Swift/Core ML helper, named `Tinycast Dev Dictation` in Debug and
+`Tinycast Dictation` in Release, in an accessory `.app` bundle without a bundled icon. Model weights
+download on demand; none are app resources.
+
 ### The dev channel
 
 Debug builds are a separate channel: **`Tinycast Dev.app`**, bundle id `com.tinycast.app.dev`. Every
 persisted thing is keyed by bundle id — `~/Library/Preferences/<id>.plist` (settings and hotkey
 bindings), `~/Library/Application Support/<id>/` (the onboarding marker, Notes, snippets, quicklinks,
-clipboard history, calculator history, launch ranking and frequent emoji),
-`~/Library/Caches/<id>/` (exchange rates, the update check, staged downloads), the `SMAppService`
+clipboard history, calculator history, launch ranking and frequent emoji; Notes and snippets unless
+a folder is chosen),
+`~/Library/Caches/<id>/` (exchange rates, the update check, staged downloads), the opt-in
+`~/.config/tinycast-dev/settings.json` (`tinycast` on stable), the `tinycast-dev://` link scheme
+(`tinycast://` on stable), the `SMAppService`
 login item, and the Accessibility / Input Monitoring (TCC) grants — so a local build can neither read
 nor clobber an installed app's state, and both run side by side.
 
@@ -65,8 +72,9 @@ Consequences worth knowing:
   and onboarding unseen. Grant and bind once; it persists across rebuilds, because the fixed build path
   and the `Tinycast Self-Signed` identity keep the TCC grant alive.
 - Don't bind the same global hotkey in both — whichever registered first wins.
-- The Hyper Key's Caps Lock remap is `hidutil` state, which is **system-wide, not per-bundle**: quitting
-  one build clears the remap for the other, which then needs a rebind or a relaunch to restore it.
+- The Hyper Key's Caps Lock remap lives on the keyboards, which are **shared, not per-bundle**:
+  enable Hyper in one build at a time so their keyboard owners do not compete. An identical mapping
+  already installed by another build is left unowned.
 
 ## Editor
 
@@ -133,6 +141,23 @@ already-running server does not re-read `.compile`.
 the repo root excludes the generated files and the two off-limits files in `DesignSystem/Scrolling/`.
 The comment policy in [standards.md](standards.md#comments) is deliberately not among its rules.
 
+`lint.sh` also runs `check-localizations.js`, which fails on a string missing from any language, a
+missing plural form, a stale entry, or a translation whose format specifiers differ from the source.
+
+## Localization
+
+```sh
+./Scripts/sync-strings.sh   # build, merge new UI strings into Localizable.xcstrings, then check it
+```
+
+`xcodebuild` extracts strings but never writes them back to the catalog — only a build in Xcode's IDE
+does — so run this after changing UI text, then translate what it added (Xcode's catalog editor, or
+the JSON directly). A string whose source changed leaves its old entry stale; delete it. The rules for
+writing localizable code are in [standards.md](standards.md#localization).
+
+To see a language without changing the setting, launch the Debug build with
+`-AppleLanguages '(de)'`; add `-NSDoubleLocalizedStrings YES` to find labels that truncate.
+
 ## Formatting
 
 ```sh
@@ -148,6 +173,7 @@ Every `*.generated.swift` file is excluded: formatting one is hand-editing it, a
 `node Scripts/gen-emoji.js` would revert it. swift-format also refuses any file that does not parse, so
 a failure from either command is a syntax error rather than a tooling problem — and it is why ⌘S looks
 like it does nothing while a file is mid-edit with unbalanced braces.
+The two protected scrolling primitives, `EdgeDissolve.swift` and `ThinScrollbar.swift`, are also excluded.
 
 **Think twice before leaning on this.** A formatter was rejected here on measured evidence, and that
 stands: running it over the tree touched 68 files, and 67 of those changed more than whitespace.
@@ -162,8 +188,8 @@ Xcode's re-indent (⌃I), as it always has been. Two consequences worth knowing:
 - `force_try` is an error; `force_cast` only warns, because the AX and AppKit bridges have four
   legitimate ones.
 
-Errors block, warnings do not. No CI runs this script; CodeRabbit runs SwiftLint on each PR but not
-the settings-search check, so run it locally before you open one.
+Errors block, warnings do not. No CI runs this script, so run it locally before you open a
+PR.
 
 ## Generated data
 
@@ -172,9 +198,14 @@ run them online, then commit the result:
 
 ```sh
 node Scripts/gen-emoji.js            # -> Tinycast/Features/Emoji/Model/EmojiData.generated.swift
+                                     #    + Tinycast/Resources/EmojiKeywords/<language>.txt
 node Scripts/gen-currencies.js       # -> Tinycast/Features/Calculator/Model/CurrencyData.generated.swift
 node Scripts/gen-countries.js        # -> Tinycast/Features/Calculator/Model/CountryZoneData.generated.swift
 ```
+
+`gen-emoji.js` also writes one CLDR keyword pack per language in its `KEYWORD_LOCALES`; adding a
+language is one line there. Pass a directory to keep the downloads between runs:
+`node Scripts/gen-emoji.js /tmp/emoji-sources`.
 
 `gen-countries.js` joins IANA's `zone.tab` with CLDR's `en` territory names on the ISO 3166 code. Re-run
 it when IANA adds or moves a country's zone; see [calculator.md](features/calculator.md#time-zones).

@@ -33,7 +33,8 @@ enum BackupApplier {
                 summary.snippetsNeedEnabling =
                     summary.snippets > 0 && !core.settings.snippetsEnabled
             } catch {
-                summary.problems.append("Couldn't import snippets: \(error.localizedDescription)")
+                summary.problems.append(
+                    String(localized: "Couldn't import snippets: \(error.localizedDescription)"))
             }
         }
         if categories.contains(.notes) {
@@ -114,9 +115,9 @@ enum BackupApplier {
 
     private static func applyLearning(_ bundle: BackupBundle, to core: AppCore) -> Int {
         var applied = 0
-        if let records = bundle.decodeLearning(.ranking, as: [LauncherRankingRecord].self) {
-            core.launcherRanking.replace(records)
-            applied += records.count
+        if let visits = bundle.decodeLearning(.ranking, as: [String: LauncherVisit].self) {
+            core.launcherRanking.replace(visits)
+            applied += visits.count
         }
         if let records = bundle.decodeLearning(.emoji, as: [FrequentEmoji].self) {
             core.frequentEmoji.replace(records)

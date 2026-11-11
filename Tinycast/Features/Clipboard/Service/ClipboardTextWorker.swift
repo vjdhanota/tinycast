@@ -7,15 +7,16 @@ nonisolated enum ClipboardTextWorker {
     /// Mirrors `ClipboardTextExtractor.maximumTextBytes`: the helper is not in the app's module.
     private static let maximumOutputBytes = 32_000
     private static let readSize = 4096
-    /// The read loop and `waitUntilExit` block, so they stay off the cooperative pool.
+    /// The read loop and the exit wait block, so they stay off the cooperative pool.
     private static let queue = DispatchQueue(
         label: "com.tinycast.clipboard-text", qos: .background, attributes: .concurrent)
+    static let executable = Bundle.main.bundleURL.appendingPathComponent(
+        "Contents/Helpers/ClipboardTextHelper")
 
     static func extract(_ item: ClipboardItem) async throws -> String {
         guard let path = item.imagePath ?? item.filePath else { return "" }
         let kind = item.kind == .image ? ClipboardFileKind.image : ClipboardFileKind.of(path: path)
         guard kind == .image || kind == .pdf else { return "" }
-        let executable = Bundle.main.bundleURL.appendingPathComponent("Contents/Helpers/ClipboardTextHelper")
         return try await extract(at: URL(fileURLWithPath: path), isPDF: kind == .pdf, executable: executable)
     }
 
@@ -31,7 +32,7 @@ nonisolated enum ClipboardTextWorker {
         process.standardOutput = output
         process.standardError = FileHandle.nullDevice
         process.qualityOfService = .background
-        do { try process.run() } catch { throw Failure.recognition }
+        guard let exit = try? process.runObservingExit() else { throw Failure.recognition }
         // Cancellation can land between the check above and the launch, which nothing else catches.
         if Task.isCancelled { terminate(process) }
         let deadline = Task.detached(priority: .background) {
@@ -40,7 +41,9 @@ nonisolated enum ClipboardTextWorker {
         }
         let result = await withTaskCancellationHandler {
             await withCheckedContinuation { continuation in
-                queue.async { continuation.resume(returning: collect(from: process, reading: output)) }
+                queue.async {
+                    continuation.resume(returning: collect(from: process, awaiting: exit, reading: output))
+                }
             }
         } onCancel: {
             terminate(process)
@@ -51,11 +54,13 @@ nonisolated enum ClipboardTextWorker {
     }
 
     /// Blocking throughout, and the only place a helper is reaped: every exit runs the `defer`.
-    private static func collect(from process: Process, reading output: Pipe) -> Result<String, Failure> {
+    private static func collect(
+        from process: Process, awaiting exit: ProcessExit, reading output: Pipe
+    ) -> Result<String, Failure> {
         let reader = output.fileHandleForReading
         defer {
             terminate(process)
-            process.waitUntilExit()
+            exit.wait()
             try? reader.close()
         }
         var data = Data()
@@ -67,7 +72,7 @@ nonisolated enum ClipboardTextWorker {
         } catch {
             return .failure(.recognition)
         }
-        process.waitUntilExit()
+        exit.wait()
         guard process.terminationStatus == 0, let text = String(data: data, encoding: .utf8) else {
             return .failure(.recognition)
         }

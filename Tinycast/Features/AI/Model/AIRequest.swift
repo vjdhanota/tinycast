@@ -75,10 +75,13 @@ struct AIMessage: Equatable, Sendable {
     let toolCalls: [AIToolCall]
     /// Tool only: the answer to one of them.
     let toolResult: AIToolResult?
+    /// Opaque Responses output lives only inside a tool turn, never in saved chat history.
+    let responseItems: [JSONValue]
 
     init(
         role: Role, text: String, images: [AIImage] = [], documents: [AIDocument] = [],
-        toolCalls: [AIToolCall] = [], toolResult: AIToolResult? = nil
+        toolCalls: [AIToolCall] = [], toolResult: AIToolResult? = nil,
+        responseItems: [JSONValue] = []
     ) {
         self.role = role
         self.text = text
@@ -86,10 +89,15 @@ struct AIMessage: Equatable, Sendable {
         self.documents = documents
         self.toolCalls = toolCalls
         self.toolResult = toolResult
+        self.responseItems = responseItems
     }
 }
 
 struct AIRequest: Equatable, Sendable {
+    /// The highest every Claude model accepts, for one whose own ceiling the catalog never named.
+    static let defaultMaxOutputTokens = 32_000
+
+    let conversationID: UUID?
     let instructions: String?
     let messages: [AIMessage]
     let maxOutputTokens: Int
@@ -99,9 +107,11 @@ struct AIRequest: Equatable, Sendable {
     let tools: [AITool]
 
     init(
-        instructions: String? = nil, messages: [AIMessage], maxOutputTokens: Int = 4_096,
-        webSearch: Bool = false, tools: [AITool] = []
+        instructions: String? = nil, messages: [AIMessage],
+        maxOutputTokens: Int = defaultMaxOutputTokens,
+        webSearch: Bool = false, tools: [AITool] = [], conversationID: UUID? = nil
     ) {
+        self.conversationID = conversationID
         self.instructions = instructions
         self.messages = messages
         self.maxOutputTokens = maxOutputTokens
@@ -113,27 +123,42 @@ struct AIRequest: Equatable, Sendable {
     func continuing(with messages: [AIMessage], tools: [AITool]) -> AIRequest {
         AIRequest(
             instructions: instructions, messages: messages, maxOutputTokens: maxOutputTokens,
-            webSearch: webSearch, tools: tools)
+            webSearch: webSearch, tools: tools, conversationID: conversationID)
     }
 }
 
 struct AIUsage: Equatable, Sendable {
     var inputTokens: Int?
     var outputTokens: Int?
+    /// Prompt tokens served from or written to a cache; Anthropic counts them outside `inputTokens`.
+    var cachedInputTokens: Int?
+    /// The part of `outputTokens` the model spent thinking.
+    var reasoningTokens: Int?
+    /// The model's whole window, where a route reports it; only Claude's CLI does.
+    var contextWindow: Int?
+    var costUSD: Double?
 
     var totalTokens: Int? {
         guard let inputTokens, let outputTokens else { return nil }
         return inputTokens + outputTokens
+    }
+
+    /// What the conversation now occupies in the window: every prompt token plus the reply.
+    var contextTokens: Int? {
+        totalTokens.map { $0 + (cachedInputTokens ?? 0) }
     }
 }
 
 enum AIStreamEvent: Equatable, Sendable {
     case text(String)
     case thinking
+    /// Reasoning text, where a route shares it; never answer text, and never sent back as context.
+    case reasoning(String)
     case searching(String?)
     case searched(String?)
     /// What a transport emits; the loop consumes it and never passes it on to the transcript.
     case toolCallRequested(AIToolCall)
+    case responseOutput([JSONValue])
     /// What the loop emits in its place, already carrying what a row has to show.
     case toolCall(id: String, origin: String, title: String)
     case toolResult(id: String, isError: Bool)
@@ -149,7 +174,8 @@ enum AIProviderError: LocalizedError, Equatable, Sendable {
     var errorDescription: String? {
         switch self {
         case .unavailable(let message), .responseFailed(let message): return message
-        case .malformedResponse: return "The provider returned malformed streaming data."
+        case .malformedResponse:
+            return String(localized: "The provider returned malformed streaming data.")
         }
     }
 }

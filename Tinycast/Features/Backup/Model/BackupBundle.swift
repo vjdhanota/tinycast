@@ -103,8 +103,16 @@ struct BackupBundle: Sendable {
     /// Mapped and decoded lazily, so a gigabyte of history costs one clip of resident memory.
     func clipboardItems() -> some Sequence<BackupClipboardItem> {
         let data = (try? Data(contentsOf: clipboardItemsURL, options: .mappedIfSafe)) ?? Data()
-        return data.split(separator: 0x0A, omittingEmptySubsequences: true)
-            .lazy
+        let lines = sequence(state: data.startIndex) { start -> Data? in
+            while start < data.endIndex {
+                let end = data[start...].firstIndex(of: 0x0A) ?? data.endIndex
+                let line = data[start..<end]
+                start = end + 1
+                if !line.isEmpty { return line }
+            }
+            return nil
+        }
+        return lines.lazy
             .compactMap { try? Self.decoder.decode(BackupClipboardItem.self, from: Data($0)) }
     }
 
@@ -138,9 +146,9 @@ struct BackupBundle: Sendable {
         }
     }
 
-    func decodeLearning<Value: Decodable>(_ part: LearningPart, as type: [Value].Type) -> [Value]? {
+    func decodeLearning<Value: Decodable>(_ part: LearningPart, as type: Value.Type) -> Value? {
         guard let data = try? Data(contentsOf: learningURL(part)) else { return nil }
-        return try? Self.decoder.decode([Value].self, from: data)
+        return try? Self.decoder.decode(Value.self, from: data)
     }
 
     // MARK: - Coding

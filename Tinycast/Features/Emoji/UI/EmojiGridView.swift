@@ -14,7 +14,7 @@ enum EmojiGrid {
     @MainActor
     static func sections(
         query: String, index: EmojiIndex, frequent: FrequentEmojiStore,
-        pinned: PinnedEmojiStore, filter: EmojiCategoryFilter
+        pinned: PinnedEmojiStore, filter: EmojiCategoryFilter, columns: EmojiGridColumns
     ) -> [EmojiGridSection] {
         var sections: [EmojiGridSection] = []
         var start = 0
@@ -28,15 +28,19 @@ enum EmojiGrid {
         if trimmed.isEmpty {
             switch filter {
             case .all:
-                append("Pinned", pinned.glyphs.compactMap(index.entry(for:)))
-                append("Frequently Used", frequent.top().compactMap(index.entry(for:)))
+                append(String(localized: "Pinned"), pinned.glyphs.compactMap(index.entry(for:)))
+                append(
+                    String(localized: "Frequently Used"),
+                    frequentlyUsed(frequent, in: index, columns: columns))
                 for section in index.categorySections {
                     append(section.category.title, section.entries)
                 }
             case .pinned:
-                append("Pinned", pinned.glyphs.compactMap(index.entry(for:)))
+                append(String(localized: "Pinned"), pinned.glyphs.compactMap(index.entry(for:)))
             case .frequentlyUsed:
-                append("Frequently Used", frequent.top().compactMap(index.entry(for:)))
+                append(
+                    String(localized: "Frequently Used"),
+                    frequentlyUsed(frequent, in: index, columns: columns))
             case .category(let category):
                 if let section = index.categorySections.first(where: { $0.category == category }) {
                     append(section.category.title, section.entries)
@@ -52,14 +56,22 @@ enum EmojiGrid {
                 let glyphs = Set(pinned.glyphs)
                 filtered = results.filter { glyphs.contains($0.glyph) }
             case .frequentlyUsed:
-                let glyphs = Set(frequent.top())
+                let glyphs = Set(frequentlyUsed(frequent, in: index, columns: columns).map(\.glyph))
                 filtered = results.filter { glyphs.contains($0.glyph) }
             case .category(let category):
                 filtered = results.filter { $0.category == category }
             }
-            append("Results", filtered)
+            append(String(localized: "Results"), filtered)
         }
         return sections
+    }
+
+    /// Two rows of the latest emoji, counted over the catalog so a glyph it lacks takes no cell.
+    @MainActor
+    static func frequentlyUsed(
+        _ frequent: FrequentEmojiStore, in index: EmojiIndex, columns: EmojiGridColumns
+    ) -> [EmojiEntry] {
+        Array(frequent.records.lazy.compactMap { index.entry(for: $0.glyph) }.prefix(columns.rawValue * 2))
     }
 }
 
@@ -75,7 +87,6 @@ private struct EmojiGridRow: Identifiable {
     }
 }
 
-/// Flat render order for one query: section headers and grid rows interleaved.
 private enum EmojiGridItem: Identifiable {
     case header(id: String, title: String, count: Int)
     case row(EmojiGridRow)
@@ -257,7 +268,6 @@ private struct EmojiGridRowView: View {
         .onRightClick { point in
             if let column = column(at: point) { onActions(row.start + column) }
         }
-        // Column hover, gated on real pointer movement like `armedHover`.
         .onContinuousHover(coordinateSpace: .local) { phase in
             switch phase {
             case .active(let point):
@@ -309,10 +319,10 @@ private struct EmojiCell: View {
             Text(glyph)
                 .font(.system(size: glyphSize))
             if selected {
-                // Let the same colours tint the slim outer ring, then restore a crisp light edge.
-                selectedHalo
-                    .mask(shape.strokeBorder(lineWidth: 2))
                 shape.strokeBorder(Theme.Colors.emojiSelectionBorder, lineWidth: 2)
+                selectedHalo
+                    .opacity(0.30)
+                    .mask(shape.strokeBorder(lineWidth: 2))
                 shape.inset(by: 2)
                     .strokeBorder(Theme.Colors.emojiInnerBorder, lineWidth: 1)
             } else if hovered {

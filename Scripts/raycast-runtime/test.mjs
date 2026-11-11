@@ -20,7 +20,7 @@ import {
   randomBytes,
   randomUUID,
 } from "node:crypto";
-import { cpus, freemem, homedir, loadavg, tmpdir, uptime } from "node:os";
+import { cpus, freemem, homedir, loadavg, networkInterfaces, tmpdir, uptime } from "node:os";
 import { lookup } from "node:dns/promises";
 import * as fs from "node:fs";
 import * as zlib from "node:zlib";
@@ -147,6 +147,10 @@ function syncHostCall(api, method, args) {
       return uptime();
     case "os.loadavg":
       return loadavg();
+    case "os.networkInterfaces":
+      return Object.entries(networkInterfaces()).flatMap(([name, addresses]) =>
+        addresses.map((address) => ({ name, ...address, mac: "00:00:00:00:00:00" })),
+      );
     case "fs.open":
       return fs.openSync(args[0], args[1], args[2]);
     case "fs.close":
@@ -184,6 +188,8 @@ function syncHostCall(api, method, args) {
       return {
         size: stat.size,
         mode: stat.mode,
+        uid: stat.uid,
+        gid: stat.gid,
         mtimeMs: stat.mtimeMs,
         atimeMs: stat.atimeMs,
         ctimeMs: stat.ctimeMs,
@@ -203,6 +209,9 @@ function syncHostCall(api, method, args) {
       }));
     case "fs.mkdir":
       return fs.mkdirSync(args[0], { recursive: args[1] }) ?? null;
+    case "fs.utimes":
+      fs.utimesSync(args[0], args[1], args[2]);
+      return null;
     case "fs.realpath":
       return fs.realpathSync(args[0]);
     case "fs.mkdtemp":
@@ -237,6 +246,23 @@ function syncHostCall(api, method, args) {
       cipher.setAutoPadding(padding);
       return Buffer.concat([cipher.update(Buffer.from(data, "base64")), cipher.final()]).toString("base64");
     }
+    case "crypto.gcmSeal": {
+      const [key, iv, data, aad] = args.map((value) => Buffer.from(value, "base64"));
+      const cipher = createCipheriv(`aes-${key.length * 8}-gcm`, key, iv).setAAD(aad);
+      const ciphertext = Buffer.concat([cipher.update(data), cipher.final()]);
+      return { ciphertext: ciphertext.toString("base64"), tag: cipher.getAuthTag().toString("base64") };
+    }
+    case "crypto.gcmOpen": {
+      const [key, iv, data, aad, tag] = args.map((value) => Buffer.from(value, "base64"));
+      const decipher = createDecipheriv(`aes-${key.length * 8}-gcm`, key, iv).setAAD(aad).setAuthTag(tag);
+      try {
+        return Buffer.concat([decipher.update(data), decipher.final()]).toString("base64");
+      } catch (error) {
+        // Mirrors the Swift host: a tag that does not verify is a result, not a host failure.
+        if (error.message !== "Unsupported state or unable to authenticate data") throw error;
+        return null;
+      }
+    }
     case "proc.start": {
       const spec = args[0];
       const child = spec.shell
@@ -246,21 +272,11 @@ function syncHostCall(api, method, args) {
       if (child.pid === undefined) throw Object.assign(new Error(`ENOENT: spawn '${spec.command}'`), { code: "ENOENT" });
       if (spec.detached) return child.pid;
       if (spec.input) child.stdin.end(Buffer.from(spec.input, "base64"));
-      const stdout = [];
-      const stderr = [];
-      child.stdout.on("data", (chunk) => stdout.push(chunk));
-      child.stderr.on("data", (chunk) => stderr.push(chunk));
+      const readers = { 1: child.stdout[Symbol.asyncIterator](), 2: child.stderr[Symbol.asyncIterator]() };
       const exit = new Promise((done) =>
-        child.on("close", (status, signal) =>
-          done({
-            stdout: Buffer.concat(stdout).toString("base64"),
-            stderr: Buffer.concat(stderr).toString("base64"),
-            status: status ?? 1,
-            signal,
-          }),
-        ),
+        child.on("close", (status, signal) => done({ stdout: "", stderr: "", status: status ?? 1, signal })),
       );
-      runningChildren.set(child.pid, exit);
+      runningChildren.set(child.pid, { readers, exit });
       return child.pid;
     }
     case "proc.kill":
@@ -298,7 +314,6 @@ function syncHostCall(api, method, args) {
   }
 }
 
-const oauthTokens = new Map();
 const runningChildren = new Map();
 const openSockets = new Map();
 let nextSocketId = 1;
@@ -334,9 +349,14 @@ async function stubHostCall(api, method, args) {
       };
     }
     case "proc.wait": {
-      const exit = runningChildren.get(args[0]);
+      const exit = runningChildren.get(args[0])?.exit;
       runningChildren.delete(args[0]);
       return exit;
+    }
+    // Streams like the Swift side: one chunk per call, null at EOF.
+    case "proc.read": {
+      const next = await runningChildren.get(args[0])?.readers[args[1]].next();
+      return next && !next.done ? Buffer.from(next.value).toString("base64") : null;
     }
     // Node's own WebSocket stands in for `URLSessionWebSocketTask`: same one-message-at-a-time read.
     case "websocket.open":
@@ -363,17 +383,6 @@ async function stubHostCall(api, method, args) {
       return null;
     }
     case "websocket.ping":
-      return null;
-    // Positional arguments throughout, matching `src/api/oauth.js`.
-    case "oauth.authorize":
-      return { authorizationCode: "auth-code-12345", state: args[1] ?? "" };
-    case "oauth.getTokens":
-      return oauthTokens.get(args[0]) ?? null;
-    case "oauth.setTokens":
-      oauthTokens.set(args[0], args[1]);
-      return null;
-    case "oauth.removeTokens":
-      oauthTokens.delete(args[0]);
       return null;
     default:
       if (["window", "feedback", "cache", "storage", "clipboard", "system"].includes(api)) return null;
@@ -414,6 +423,11 @@ export function bootConfig(overrides = {}) {
       homedir: homedir(),
       tmpdir: tmpdir(),
       username: "tester",
+      uid: process.getuid(),
+      gid: process.getgid(),
+      euid: process.geteuid(),
+      egid: process.getegid(),
+      groups: process.getgroups(),
     },
     environment: {
       extensionName: "fixture",
@@ -515,7 +529,7 @@ async function runExtension(dir, commandName) {
       },
     }),
   );
-  harness.start("s1", readFileSync(file, "utf8"), file, dir, target.mode === "view" ? "view" : "no-view", {});
+  harness.start("s1", readFileSync(file, "utf8"), file, dir, target.mode, {});
 
   await new Promise((resolve) => setTimeout(resolve, Number(process.env.EXT_TEST_SETTLE_MS ?? 1500)));
   if (harness.state.failures.length) {

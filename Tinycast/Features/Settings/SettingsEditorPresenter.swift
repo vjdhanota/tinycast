@@ -101,7 +101,7 @@ final class SettingsEditorPresenter: NSObject {
         }
     }
 
-    private final class Panel: NSPanel {
+    private final class Panel: NSPanel, AnimatedPanel {
         var cancelHandler: (() -> Void)?
 
         init(content: NSView, cornerRadius: CGFloat) {
@@ -116,7 +116,7 @@ final class SettingsEditorPresenter: NSObject {
             isOpaque = false
             backgroundColor = .clear
             hasShadow = true
-            animationBehavior = .none
+            followMotion()
             isMovableByWindowBackground = false
             isReleasedWhenClosed = false
             content.wantsLayer = true
@@ -129,31 +129,14 @@ final class SettingsEditorPresenter: NSObject {
         override var canBecomeKey: Bool { true }
         override var canBecomeMain: Bool { false }
 
+        /// A child window drags alone, so the drag goes to the window it sits on, as a sheet's does.
+        override func performDrag(with event: NSEvent) {
+            parent?.performDrag(with: event)
+        }
+
         /// The fallback: a panel whose content declares `.cancelAction` handles Escape itself.
         override func cancelOperation(_ sender: Any?) {
             cancelHandler?()
-        }
-
-        func animateEntrance(offset: CGFloat, startingOpacity: CGFloat, duration: TimeInterval) {
-            guard let layer = contentView?.layer else { return }
-
-            let movement = CABasicAnimation(keyPath: "transform.translation.y")
-            movement.fromValue = -offset
-            movement.toValue = 0
-            movement.duration = duration
-
-            let opacity = CABasicAnimation(keyPath: "opacity")
-            opacity.fromValue = startingOpacity
-            opacity.toValue = 1
-            opacity.duration = duration
-
-            let entrance = CAAnimationGroup()
-            entrance.animations = [movement, opacity]
-            entrance.duration = duration
-            entrance.timingFunction = CAMediaTimingFunction(name: .easeOut)
-
-            layer.add(entrance, forKey: "settingsEditorEntrance")
-            alphaValue = 1
         }
 
         func focusFirstControl() {
@@ -178,7 +161,8 @@ final class SettingsEditorPresenter: NSObject {
             contentView = NSHostingView(
                 rootView: Theme.Colors.dialogDimming
                     .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
-                    .ignoresSafeArea())
+                    .ignoresSafeArea()
+                    .motionScope())
         }
 
         override var canBecomeKey: Bool { false }
@@ -190,6 +174,8 @@ final class SettingsEditorPresenter: NSObject {
                 return
             }
             target?.makeKeyAndOrderFront(nil)
+            // The dim covers the parent's titlebar, so it has to carry the parent's drag.
+            if event.type == .leftMouseDown { parent?.performDrag(with: event) }
         }
     }
 
@@ -215,6 +201,9 @@ final class SettingsEditorPresenter: NSObject {
             self, selector: #selector(parentWillClose(_:)),
             name: NSWindow.willCloseNotification, object: window)
         observeResize(of: window)
+        NotificationCenter.default.addObserver(
+            self, selector: #selector(hostDidChangeFrame(_:)),
+            name: NSWindow.didMoveNotification, object: window)
         flushPending()
     }
 
@@ -288,49 +277,31 @@ final class SettingsEditorPresenter: NSObject {
         // Its own resize too: the content sizes the panel, so a growing form must re-centre it.
         observeResize(of: panel)
         layout(presentation)
-        panel.alphaValue = 0
         parent.addChildWindow(blocker, ordered: .above)
         parent.addChildWindow(panel, ordered: .above)
         blocker.fadeIn(duration: Theme.Duration.dialogEnter) { blocker.orderFront(nil) }
         panel.makeKeyAndOrderFront(nil)
-        prepareEntrance(panel: panel)
+        focusAfterLayout(panel: panel)
     }
 
-    private func prepareEntrance(panel: Panel) {
+    private func focusAfterLayout(panel: Panel) {
         Task { @MainActor [weak self, weak panel] in
             await Task.yield()
             guard let self, let panel,
                 self.presentations.contains(where: { $0.panel === panel })
             else { return }
             panel.focusFirstControl()
-            await Task.yield()
-            guard self.presentations.contains(where: { $0.panel === panel }) else { return }
-            animateEntrance(panel: panel)
-        }
-    }
-
-    private func animateEntrance(panel: Panel) {
-        panel.animateEntrance(
-            offset: Theme.DialogMotion.offset,
-            startingOpacity: Theme.DialogMotion.initialOpacity,
-            duration: Theme.Duration.dialogEnter)
-        Task { @MainActor [weak self, weak panel] in
-            try? await Task.sleep(for: .seconds(Theme.Duration.dialogEnter))
-            guard let self, let panel,
-                self.presentations.contains(where: { $0.panel === panel })
-            else { return }
-            panel.animationBehavior = .utilityWindow
         }
     }
 
     private func observeResize(of window: NSWindow) {
         NotificationCenter.default.addObserver(
-            self, selector: #selector(hostDidResize(_:)),
+            self, selector: #selector(hostDidChangeFrame(_:)),
             name: NSWindow.didResizeNotification, object: window)
     }
 
     /// Outermost first, so a nested panel centres on a parent that has already settled.
-    @objc private func hostDidResize(_ notification: Notification) {
+    @objc private func hostDidChangeFrame(_ notification: Notification) {
         presentations.forEach(layout)
     }
 
@@ -339,10 +310,20 @@ final class SettingsEditorPresenter: NSObject {
         let parentContent = parent.convertToScreen(parent.contentLayoutRect)
         presentation.blocker.setFrame(parent.frame, display: false)
         let panelSize = presentation.panel.frame.size
-        presentation.panel.setFrameOrigin(
-            NSPoint(
-                x: parentContent.midX - panelSize.width / 2,
-                y: parentContent.midY - panelSize.height / 2))
+        let centred = NSPoint(
+            x: parentContent.midX - panelSize.width / 2, y: parentContent.midY - panelSize.height / 2)
+        guard let visible = parent.screen?.visibleFrame else {
+            presentation.panel.setFrameOrigin(centred)
+            return
+        }
+        presentation.panel.setFrameOrigin(Self.origin(centred, size: panelSize, keptIn: visible))
+    }
+
+    /// A parent dragged into a corner must not carry the editor's buttons off screen; the top wins.
+    private static func origin(_ origin: NSPoint, size: NSSize, keptIn visible: NSRect) -> NSPoint {
+        NSPoint(
+            x: max(min(origin.x, visible.maxX - size.width), visible.minX),
+            y: min(max(origin.y, visible.minY), visible.maxY - size.height))
     }
 
     private func blockerCornerRadius(for parent: NSWindow) -> CGFloat {
@@ -399,27 +380,43 @@ extension View {
         editorPresenter: SettingsEditorPresenter
     ) -> some View {
         environment(\.settingsEditorPresenter, editorPresenter)
+            .environment(
+                \.shortcutDeepLink,
+                ShortcutDeepLink(
+                    url: { [launcher = core.launcherCoordinator] in launcher.deepLink(for: $0) },
+                    copy: { [links = core.deepLinkCoordinator] in links.copy($0) })
+            )
             .environment(navigation)
             .environment(core)
             .environment(core.settings)
+            .environment(core.dictationCoordinator)
             .environment(core.appIndex)
             .environment(core.hotKeys)
             .environment(core.visibility)
             .environment(core.aliases)
             .environment(core.fallbacks)
             .environment(core.customCommands)
+            .environment(core.customCommandCoordinator)
             .environment(core.snippetsStore)
+            .environment(core.snippetCoordinator)
             .environment(core.quicklinks)
+            .environment(core.quicklinkCoordinator)
             .environment(core.windowLayouts)
+            .environment(core.rooms)
+            .environment(core.roomCoordinator)
             .environment(core.customWindowSizes)
             .environment(core.customWindowSizeCoordinator)
             .environment(core.calendarStore)
             .environment(core.aiSettings)
             .environment(core.mcpSettings)
+            .environment(core.mcpCoordinator)
             .environment(core.quickActionSettings)
             .environment(core.customQuickActions)
+            .environment(core.chatPresets)
+            .environment(core.aiChatCoordinator)
             .environment(core.chatGPTSubscription)
             .environment(core.installedAI)
             .scrollContentBackground(.hidden)
+            .motionScope()
     }
 }

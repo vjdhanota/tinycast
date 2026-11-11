@@ -1,13 +1,14 @@
 import Foundation
 
-/// Which type filter ⌘P opens. The header shows at most one, so this says which — and a running
-/// command's own dropdown answers first, so Tinycast's clipboard filter can never open over it.
+/// Which header menu ⌘P opens; a running command's own dropdown always answers first.
 enum PaletteFilterAction: Equatable {
     /// A running command's `searchBarAccessory` dropdown.
     case extensionAccessory
     case clipboardFilter
     case fileSearchFilter
     case emojiCategory
+    case dictionaryScope
+    case aiModel
     /// No filter on the header, so the key stays with the search field.
     case ignored
 
@@ -21,6 +22,8 @@ enum PaletteFilterAction: Equatable {
         case .clipboard: return .clipboardFilter
         case .fileSearch: return .fileSearchFilter
         case .emoji: return .emojiCategory
+        case .dictionary: return .dictionaryScope
+        case .ai: return .aiModel
         default: return .ignored
         }
     }

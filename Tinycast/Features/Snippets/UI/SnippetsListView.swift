@@ -49,6 +49,7 @@ struct SnippetsList: View {
 private struct SnippetRow: View {
 
     @Environment(\.metrics) private var metrics
+    @Environment(HotKeyManager.self) private var hotKeys
     let record: StoredSnippet
     let selected: Bool
     @State private var hovered = false
@@ -60,15 +61,10 @@ private struct SnippetRow: View {
     }
 
     var body: some View {
-        HStack(spacing: metrics.spacing.lg) {
-            RoundedRectangle(cornerRadius: metrics.radius.thumbnail, style: .continuous)
-                .fill(Theme.Colors.controlSurface)
-                .frame(width: metrics.size.rowIcon, height: metrics.size.rowIcon)
-                .overlay(
-                    Image(systemName: "curlybraces")
-                        .font(.system(size: 12))
-                        .symbolRenderingMode(.hierarchical)
-                        .foregroundStyle(.secondary))
+        IconCache.observeStyle()
+        return HStack(spacing: metrics.spacing.lg) {
+            Image(nsImage: IconCache.symbolIcon(named: "curlybraces")).resizable()
+                .frame(width: metrics.size.resultRowIcon, height: metrics.size.resultRowIcon)
             Text(record.snippet.name)
                 .font(metrics.typography.rowTitle)
                 .lineLimit(1)
@@ -78,6 +74,13 @@ private struct SnippetRow: View {
                     .font(metrics.typography.keyCap)
                     .foregroundStyle(Theme.Colors.textTertiary)
                     .lineLimit(1)
+            }
+            if let keycaps = hotKeys.binding(for: .snippet(id: record.id))?.keycaps {
+                HStack(spacing: metrics.spacing.xxs) {
+                    ForEach(Array(keycaps.enumerated()), id: \.offset) { _, cap in
+                        KeyCapChip(text: cap, style: .outline)
+                    }
+                }
             }
         }
         .padding(.horizontal, metrics.spacing.md)
@@ -115,22 +118,39 @@ struct SnippetPreview: View {
 /// The "Information" block; everything in it is already in memory, so nothing is gathered off-main.
 private struct SnippetInfoSection: View {
     @Environment(\.metrics) private var metrics
+    @Environment(HotKeyManager.self) private var hotKeys
     let record: StoredSnippet
 
     private struct InfoRow: Identifiable {
         let label: String
-        let value: String
+        let value: Text
         var id: String { label }
+
+        init(label: String, value: String) {
+            self.label = label
+            self.value = Text(value)
+        }
+
+        init(label: String, keycaps: [String]) {
+            self.label = label
+            value = KeyCapChip.inlineText(keycaps)
+        }
     }
 
     private var rows: [InfoRow] {
-        var rows = [InfoRow(label: "Name", value: record.snippet.name)]
+        var rows = [InfoRow(label: String(localized: "Name"), value: record.snippet.name)]
         if let keyword = record.snippet.keyword, !keyword.isEmpty {
-            rows.append(InfoRow(label: "Keyword", value: keyword))
+            rows.append(InfoRow(label: String(localized: "Keyword"), value: keyword))
         }
-        rows.append(InfoRow(label: "File", value: record.fileURL.lastPathComponent))
+        if let keycaps = hotKeys.binding(for: .snippet(id: record.id))?.keycaps {
+            rows.append(InfoRow(label: String(localized: "Shortcut"), keycaps: keycaps))
+        }
         rows.append(
-            InfoRow(label: "Characters", value: record.snippet.text.count.formatted()))
+            InfoRow(label: String(localized: "File"), value: record.fileURL.lastPathComponent))
+        rows.append(
+            InfoRow(
+                label: String(localized: "Characters"),
+                value: record.snippet.text.count.formatted()))
         return rows
     }
 
@@ -146,7 +166,7 @@ private struct SnippetInfoSection: View {
                     HStack(spacing: metrics.spacing.sm) {
                         Text(row.label).foregroundStyle(.secondary)
                         Spacer(minLength: metrics.spacing.lg)
-                        Text(row.value).lineLimit(1).truncationMode(.middle)
+                        row.value.lineLimit(1).truncationMode(.middle)
                     }
                     .font(metrics.typography.keyCap)
                     .padding(.vertical, metrics.spacing.xs)

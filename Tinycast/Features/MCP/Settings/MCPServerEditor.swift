@@ -8,6 +8,7 @@ struct MCPServerEditorTarget: Identifiable {
 
 /// Adds or edits one server, and can prove it connects before the panel is dismissed.
 struct MCPServerEditor: View {
+    @Environment(MCPCoordinator.self) private var coordinator
     let target: MCPServerEditorTarget
     let onSave: (MCPServer, MCPSecretStore.Secrets) -> String?
     let onCancel: () -> Void
@@ -17,7 +18,7 @@ struct MCPServerEditor: View {
         case stdio
 
         var id: String { rawValue }
-        var title: String { self == .http ? "HTTP" : "Command" }
+        var title: String { self == .http ? "HTTP" : String(localized: "Command") }
     }
 
     private enum Probe: Equatable {
@@ -27,6 +28,12 @@ struct MCPServerEditor: View {
         case failed(String)
     }
 
+    @State private var usesOAuth: Bool
+    @State private var clientID: String
+    @State private var clientSecret: String
+    // The status label's copy: a view body never reads the Keychain, actions read it fresh.
+    @State private var storedOAuth: MCPOAuth.Credentials?
+    @State private var operation: Task<Void, Never>?
     @State private var name: String
     @State private var kind: Kind
     @State private var url: String
@@ -50,6 +57,10 @@ struct MCPServerEditor: View {
         self.onCancel = onCancel
         let server = target.server
         let secrets = target.isNew ? MCPSecretStore.Secrets() : MCPSecretStore().secrets(for: server.id)
+        _usesOAuth = State(initialValue: server.oauth == true)
+        _clientID = State(initialValue: secrets.oauth?.clientID ?? "")
+        _clientSecret = State(initialValue: secrets.oauth?.clientSecret ?? "")
+        _storedOAuth = State(initialValue: secrets.oauth)
         _name = State(initialValue: server.name)
         _isEnabled = State(initialValue: server.isEnabled)
         _trust = State(initialValue: server.trust)
@@ -86,49 +97,64 @@ struct MCPServerEditor: View {
             Form {
                 Section {
                     field("Name") {
-                        TextField("Name", text: $name, prompt: Text("GitHub"))
+                        TextField("Name", text: $name, prompt: Text(verbatim: "GitHub"))
                             .settingsEditorTextField()
                     }
                     field("Handle") {
-                        Text("@\(MCPSlug.normalize(name.isEmpty ? target.server.slug : name))")
+                        Text(verbatim: "@\(MCPSlug.normalize(name.isEmpty ? target.server.slug : name))")
                             .foregroundStyle(.secondary)
                     }
                     field("Connection") {
-                        Picker("Connection", selection: $kind) {
-                            ForEach(Kind.allCases) { Text($0.title).tag($0) }
-                        }
-                        .labelsHidden()
-                        .pickerStyle(.segmented)
+                        SteadySegmentedPicker(
+                            title: String(localized: "Connection"),
+                            options: Kind.allCases.map { .init(value: $0, title: $0.title) },
+                            selection: $kind)
                     }
                     if kind == .http {
                         field("URL") {
-                            TextField("URL", text: $url, prompt: Text("https://example.com/mcp"))
+                            TextField("URL", text: $url, prompt: Text(verbatim: "https://example.com/mcp"))
                                 .settingsEditorTextField()
                         }
-                        field("Header") {
-                            TextField("Header", text: $headerName, prompt: Text("Authorization"))
-                                .settingsEditorTextField()
+                        field("Authentication") {
+                            Picker("Authentication", selection: $usesOAuth) {
+                                Text("Header").tag(false)
+                                Text(verbatim: "OAuth").tag(true)
+                            }
+                            .labelsHidden()
                         }
-                        field("Value") {
-                            SecureField("Value", text: $headerValue, prompt: Text("Bearer …"))
+                        if usesOAuth {
+                            oauthFields
+                        } else {
+                            field("Header") {
+                                TextField(
+                                    "Header", text: $headerName, prompt: Text(verbatim: "Authorization")
+                                )
                                 .settingsEditorTextField()
+                            }
+                            field("Value") {
+                                RevealableSecureField(
+                                    title: String(localized: "Value"), text: $headerValue,
+                                    prompt: Text(verbatim: "Bearer …")
+                                )
+                                .settingsEditorTextField()
+                            }
                         }
                     } else {
                         field("Command") {
-                            TextField("Command", text: $command, prompt: Text("npx"))
+                            TextField("Command", text: $command, prompt: Text(verbatim: "npx"))
                                 .settingsEditorTextField()
                         }
                         field("Arguments") {
                             TextField(
                                 "Arguments", text: $argumentText,
-                                prompt: Text("-y @modelcontextprotocol/server-filesystem ~/Desktop")
+                                prompt: Text(verbatim: "-y @modelcontextprotocol/server-filesystem ~/Desktop")
                             )
                             .settingsEditorTextField()
                         }
                         field("Environment") {
                             TextField(
                                 "Environment", text: $environmentText,
-                                prompt: Text("GITHUB_TOKEN=…"), axis: .vertical
+                                prompt: Text(verbatim: "GITHUB_TOKEN=…"), axis: .vertical
                             )
                             .textFieldStyle(.plain)
                             .lineLimit(2...5)
@@ -138,10 +164,14 @@ struct MCPServerEditor: View {
                 } footer: {
                     Text(
                         kind == .http
-                            ? "Remote endpoints must use HTTPS. The header value is stored in your "
-                                + "login Keychain, never in preferences."
-                            : "The command runs on this Mac with your own account. One "
-                                + "NAME=value per line; values are stored in your login Keychain."
+                            ? """
+                            Remote endpoints must use HTTPS. Credentials are stored in your login \
+                            Keychain, never in preferences.
+                            """
+                            : """
+                            The command runs on this Mac with your own account. One NAME=value per \
+                            line; values are stored in your login Keychain.
+                            """
                     )
                     .font(.caption)
                     .foregroundStyle(.secondary)
@@ -157,7 +187,7 @@ struct MCPServerEditor: View {
                     }
                     HStack(spacing: Theme.Spacing.lg) {
                         Button("Test Connection", action: test)
-                            .disabled(probe == .running)
+                            .disabled(operation != nil)
                         probeLabel
                     }
                     if let error {
@@ -165,8 +195,10 @@ struct MCPServerEditor: View {
                     }
                 } footer: {
                     Text(
-                        "Ask Each Chat puts the first tool call of every conversation through a "
-                            + "confirmation. Never Allow withholds the server without removing it."
+                        """
+                        Ask Each Chat puts the first tool call of every conversation through a \
+                        confirmation. Never Allow withholds the server without removing it.
+                        """
                     )
                     .font(.caption)
                     .foregroundStyle(.secondary)
@@ -181,6 +213,7 @@ struct MCPServerEditor: View {
                     .buttonStyle(.modalAction(.cancel))
                     .keyboardShortcut(.cancelAction)
                 Button("Save", action: save)
+                    .disabled(operation != nil)
                     .buttonStyle(.modalAction(.primary))
                     .keyboardShortcut(.defaultAction)
             }
@@ -188,6 +221,97 @@ struct MCPServerEditor: View {
         }
         .frame(width: 620, height: 560)
         .settingsEditorPanelSurface()
+        .onDisappear {
+            operation?.cancel()
+            coordinator.cancelSignIn(target.server.id)
+            if target.isNew { coordinator.discardUnsaved(target.server.id) }
+        }
+        .onChange(of: url) { cancelOperation() }
+        .onChange(of: usesOAuth) { cancelOperation() }
+        .onChange(of: kind) { cancelOperation() }
+        .onChange(of: clientID) { cancelOperation() }
+        .onChange(of: clientSecret) { cancelOperation() }
+    }
+
+    private var oauthFields: some View {
+        Group {
+            field("Client ID") {
+                TextField("Client ID", text: $clientID, prompt: Text("Optional — register automatically"))
+                    .settingsEditorTextField()
+            }
+            field("Client secret") {
+                RevealableSecureField(
+                    title: String(localized: "Client secret"), text: $clientSecret,
+                    prompt: Text("Optional")
+                )
+                .settingsEditorTextField()
+            }
+            field("Sign-in") {
+                HStack(spacing: Theme.Spacing.lg) {
+                    switch authenticationStatus {
+                    case .signedIn: Button("Sign Out", action: signOut).disabled(operation != nil)
+                    case .signingIn: Button("Cancel", action: cancelOperation)
+                    default: Button("Sign In", action: signIn).disabled(operation != nil)
+                    }
+                    Text(authenticationStatus.label)
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+            }
+        }
+    }
+
+    private var supplied: MCPOAuth.Credentials { .supplied(clientID: clientID, clientSecret: clientSecret) }
+
+    private var authenticationStatus: MCPOAuthManager.Status {
+        var server = target.server
+        server.transport = .http(
+            url: url.trimmingCharacters(in: .whitespaces),
+            headerName: headerName.trimmingCharacters(in: .whitespaces))
+        let status = coordinator.authenticationStatus(server, stored: storedOAuth)
+        let supplied = supplied
+        guard storedOAuth?.clientID == supplied.clientID, storedOAuth?.clientSecret == supplied.clientSecret,
+            storedOAuth?.registration?.resource == (try? MCPOAuth.resource(url))
+        else {
+            if case .signingIn = status { return status }
+            if case .failed = status { return status }
+            return .signedOut
+        }
+        return status
+    }
+
+    private func signIn() {
+        if let message = validate() { error = message; return }
+        error = nil
+        let draft = draft
+        guard let credentials = draft.secrets.oauth else { return }
+        operation = Task {
+            defer { operation = nil }
+            do {
+                try await coordinator.signIn(draft.server, credentials: credentials)
+                storedOAuth = MCPSecretStore().secrets(for: target.server.id).oauth
+            } catch is CancellationError {
+                return
+            } catch {
+                self.error = error.localizedDescription
+            }
+        }
+    }
+
+    private func signOut() {
+        do {
+            try coordinator.signOut(target.server.id)
+            storedOAuth?.token = nil
+            probe = .idle
+            error = nil
+        } catch {
+            self.error = String(localized: "The credentials could not be removed from your login Keychain.")
+        }
+    }
+
+    private func cancelOperation() {
+        operation?.cancel()
+        coordinator.cancelSignIn(target.server.id)
+        probe = .idle
     }
 
     @ViewBuilder private var probeLabel: some View {
@@ -197,7 +321,7 @@ struct MCPServerEditor: View {
         case .running:
             ProgressView().controlSize(.small)
         case .found(let count):
-            Label(count == 1 ? "1 tool" : "\(count) tools", systemImage: "checkmark.circle")
+            Label("\(count) tools", systemImage: "checkmark.circle")
                 .font(.caption)
                 .foregroundStyle(.secondary)
         case .failed(let message):
@@ -208,7 +332,7 @@ struct MCPServerEditor: View {
     }
 
     private func field<Content: View>(
-        _ label: String, @ViewBuilder content: () -> Content
+        _ label: LocalizedStringResource, @ViewBuilder content: () -> Content
     ) -> some View {
         SettingsEditorField(label, content: content)
     }
@@ -224,8 +348,26 @@ struct MCPServerEditor: View {
             server.transport = .http(
                 url: url.trimmingCharacters(in: .whitespaces),
                 headerName: headerName.trimmingCharacters(in: .whitespaces))
-            return (server, MCPSecretStore.Secrets(headerValue: headerValue))
+            server.oauth = usesOAuth ? true : nil
+            var secrets = MCPSecretStore.Secrets(headerValue: usesOAuth ? "" : headerValue)
+            if usesOAuth {
+                var credentials = MCPSecretStore().secrets(for: server.id).oauth ?? MCPOAuth.Credentials()
+                let supplied = supplied
+                if credentials.clientID != supplied.clientID
+                    || credentials.clientSecret != supplied.clientSecret
+                {
+                    credentials = supplied
+                }
+                if let registration = credentials.registration,
+                    registration.resource != (try? MCPOAuth.resource(url))
+                {
+                    credentials.token = nil
+                }
+                secrets.oauth = credentials
+            }
+            return (server, secrets)
         case .stdio:
+            server.oauth = nil
             server.transport = .stdio(
                 command: command.trimmingCharacters(in: .whitespaces),
                 arguments: Self.arguments(from: argumentText),
@@ -243,15 +385,16 @@ struct MCPServerEditor: View {
         error = nil
         probe = .running
         let draft = draft
-        Task {
-            let connection = MCPServerConnection(server: draft.server, secrets: draft.secrets)
-            await connection.start()
-            switch connection.status {
+        operation = Task {
+            defer { operation = nil }
+            let status = await coordinator.test(draft.server, secrets: draft.secrets)
+            guard !Task.isCancelled else { return }
+            switch status {
             case .ready(let tools): probe = .found(tools)
             case .failed(let message): probe = .failed(message)
-            default: probe = .failed("The server did not answer.")
+            case .signInRequired: probe = .failed(String(localized: "Sign-in required"))
+            default: probe = .failed(String(localized: "The server did not answer."))
             }
-            connection.stop()
         }
     }
 
@@ -273,7 +416,7 @@ struct MCPServerEditor: View {
                 return error.localizedDescription
             }
         case .stdio where command.trimmingCharacters(in: .whitespaces).isEmpty:
-            return "Enter the command that starts this server."
+            return String(localized: "Enter the command that starts this server.")
         case .stdio:
             break
         }

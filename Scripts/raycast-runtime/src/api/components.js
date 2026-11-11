@@ -7,6 +7,7 @@ import {
   createElement as h,
   useCallback,
   useContext,
+  useEffect,
   useImperativeHandle,
   useMemo,
   useRef,
@@ -86,15 +87,19 @@ export function NavigationRoot({ initial, onStackChange, controls }) {
 
 const FormContext = createContext(null);
 
-function useFormRegistration(id, value, setValue) {
+function useFormRegistration(id, value, setValue, storeValue) {
   const form = useContext(FormContext);
-  if (form && id) form.fields.set(id, { value, setValue });
+  if (form && id) form.fields.set(id, { value, setValue, storeValue });
   return form;
 }
 
 /// A field's local value, or the controlled `value` prop when the extension supplies one.
-function useFieldValue(props, fallback) {
-  const [local, setLocal] = useState(() => (props.value !== undefined ? props.value : props.defaultValue ?? fallback));
+function useFieldValue(props, fallback, restore) {
+  const [local, setLocal] = useState(() => {
+    if (props.value !== undefined) return props.value;
+    const stored = props.storeValue && props.id ? effects.storedFormValue(props.id) : undefined;
+    return (stored == null ? undefined : restore(stored)) ?? props.defaultValue ?? fallback;
+  });
   const controlled = props.value !== undefined;
   const value = controlled ? props.value : local;
   const setValue = useCallback(
@@ -103,7 +108,7 @@ function useFieldValue(props, fallback) {
     },
     [controlled],
   );
-  useFormRegistration(props.id, value, setLocal);
+  useFormRegistration(props.id, value, setLocal, props.storeValue === true);
   return [value, setValue];
 }
 
@@ -124,8 +129,22 @@ export function setFieldCommandHandler(handler) {
 
 // ─── List ───────────────────────────────────────────────────────────
 
+/// `throttle` waits for typing to pause, so a slow reply for an older query can't land last.
+function useThrottledSearch(props) {
+  const latest = useRef();
+  const timer = useRef();
+  latest.current = props.onSearchTextChange;
+  useEffect(() => () => clearTimeout(timer.current), []);
+  const delayed = useCallback((text) => {
+    clearTimeout(timer.current);
+    timer.current = setTimeout(() => latest.current?.(text), 300);
+  }, []);
+  return props.throttle && props.onSearchTextChange ? delayed : props.onSearchTextChange;
+}
+
 function List(props) {
   const rest = omit(props, ["children", "actions", "searchBarAccessory"]);
+  rest.onSearchTextChange = useThrottledSearch(props);
   // Raycast filters client-side unless the extension takes over the search text.
   if (rest.filtering === undefined) rest.filtering = props.onSearchTextChange === undefined;
   return h(
@@ -185,6 +204,7 @@ List.Dropdown = makeSearchDropdown("List.Dropdown");
 
 function Grid(props) {
   const rest = omit(props, ["children", "actions", "searchBarAccessory"]);
+  rest.onSearchTextChange = useThrottledSearch(props);
   if (rest.filtering === undefined) rest.filtering = props.onSearchTextChange === undefined;
   return h(
     "Grid",
@@ -226,14 +246,20 @@ DetailMetadata.TagList = Section("Detail.Metadata.TagList");
 DetailMetadata.TagList.Item = Section("Detail.Metadata.TagList.Item");
 
 Detail.Metadata = DetailMetadata;
-// List.Item.Detail shares Detail's metadata components.
 ListItemDetail.Metadata = DetailMetadata;
 
 // ─── Form ───────────────────────────────────────────────────────────
 
 function Form(props) {
   const fields = useRef(new Map()).current;
-  const context = useMemo(() => ({ fields, values: () => collectValues(fields) }), [fields]);
+  const context = useMemo(
+    () => ({
+      fields,
+      values: () => collectValues(fields),
+      storeValues: () => effects.storeFormValues(storedValues(fields)),
+    }),
+    [fields],
+  );
   return h(
     FormContext.Provider,
     { value: context },
@@ -253,9 +279,18 @@ function collectValues(fields) {
   return values;
 }
 
+function storedValues(fields) {
+  const values = {};
+  for (const [id, field] of fields) {
+    if (field.storeValue && field.value != null) values[id] = JSON.stringify(field.value);
+  }
+  return values;
+}
+
 function makeField(type, fallback) {
+  const restore = type === "Form.DatePicker" ? decodeDate : (value) => value;
   return function Field(props) {
-    const [value, setValue] = useFieldValue(props, fallback);
+    const [value, setValue] = useFieldValue(props, fallback, restore);
     useFieldRef(props.ref, { setValue, initial: props.defaultValue ?? fallback, id: props.id });
     const rest = omit(props, ["children", "ref", "value", "defaultValue", "onChange", "onBlur", "onFocus"]);
     return h(
@@ -438,7 +473,11 @@ Action.SubmitForm = function ActionSubmitForm(props) {
     shortcut: props.shortcut,
     style: props.style,
     autoFocus: props.autoFocus,
-    onAction: () => props.onSubmit?.(form ? form.values() : {}),
+    onAction: () => {
+      if (!form) return props.onSubmit?.({});
+      form.storeValues();
+      return props.onSubmit?.(form.values());
+    },
   });
 };
 
@@ -483,12 +522,13 @@ Action.InstallMCPServer = convenience("Action.InstallMCPServer", (props) => ({
   onAction: () => effects.unsupported("Action.InstallMCPServer"),
 }));
 
-// ─── Menu bar (not rendered — commands of mode "menu-bar" are reported unsupported) ──
+// ─── Menu bar ───────────────────────────────────────────────────────
 
 function MenuBarExtra(props) {
   return h("MenuBarExtra", omit(props, ["children"]), props.children);
 }
-MenuBarExtra.Item = Section("MenuBarExtra.Item");
+MenuBarExtra.Item = (props) =>
+  h("MenuBarExtra.Item", omit(props, ["children", "alternate"]), slot("alternate", props.alternate));
 MenuBarExtra.Submenu = Section("MenuBarExtra.Submenu");
 MenuBarExtra.Section = Section("MenuBarExtra.Section");
 MenuBarExtra.Separator = Section("MenuBarExtra.Separator");

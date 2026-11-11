@@ -1,6 +1,5 @@
 import AppKit
 
-/// Draws one line's block chrome (code bands, quote bars, rules, list markers) around its text.
 final class NoteBlockLayoutFragment: NSTextLayoutFragment {
     let decoration: NoteBlockDecoration
 
@@ -63,14 +62,19 @@ final class NoteBlockLayoutFragment: NSTextLayoutFragment {
         textLayoutManager?.textContainer?.size.width ?? super.renderingSurfaceBounds.width
     }
 
-    /// The first visual line, which markers align with when an item wraps.
-    private var firstLine: CGRect {
-        textLineFragments.first?.typographicBounds ?? CGRect(origin: .zero, size: layoutFragmentFrame.size)
+    /// The first line of text, which markers align with when an item wraps.
+    var firstLine: CGRect {
+        firstTextLine?.typographicBounds ?? CGRect(origin: .zero, size: layoutFragmentFrame.size)
     }
 
-    private var firstBaseline: CGFloat {
-        guard let line = textLineFragments.first else { return layoutFragmentFrame.height }
+    var firstBaseline: CGFloat {
+        guard let line = firstTextLine else { return layoutFragmentFrame.height }
         return line.typographicBounds.minY + line.glyphOrigin.y
+    }
+
+    /// A word too wide for the first line wraps, leaving the hidden marker alone on a hairline.
+    private var firstTextLine: NSTextLineFragment? {
+        textLineFragments.first { $0.typographicBounds.height > decoration.bodyPointSize / 2 }
     }
 
     private func drawBand(
@@ -124,7 +128,7 @@ final class NoteBlockLayoutFragment: NSTextLayoutFragment {
     }
 
     private func drawLabel(_ label: String, level: Int, left: CGFloat, top: CGFloat, in context: CGContext) {
-        let font = NSFont.monospacedDigitSystemFont(ofSize: decoration.bodyPointSize, weight: .regular)
+        let font = NSFont.systemFont(ofSize: decoration.bodyPointSize)
         let line = Self.line(label, font: font, color: decoration.ink)
         let width = CTLineGetTypographicBounds(line, nil, nil, nil)
         let slotEnd = left + CGFloat(level + 1) * slot - Self.orderedLabelPadding

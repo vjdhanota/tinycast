@@ -46,10 +46,12 @@ struct PalettePlacementTests {
 
     static func main() {
         theDefaultPlacement()
+        glassDrawingClearance()
         restoringOnItsOwnDisplay()
         offsetsFollowTheirDisplay()
         restoringPartlyOffscreen()
         snapping()
+        expandedDetentFollowsGeometry()
         menuPanelAnchors()
         tokenGrammar()
         everyInterfaceSize()
@@ -59,6 +61,34 @@ struct PalettePlacementTests {
     }
 
     // MARK: - The untouched placement
+
+    static func glassDrawingClearance() {
+        for interfaceSize in InterfaceSize.allCases {
+            let size = interfaceSize.metrics.size
+            let compactSize = CGSize(width: size.panelWidth, height: size.compactHeight)
+            let expandedSize = CGSize(width: size.panelWidth, height: size.panelHeight)
+            for anchor in [CGPoint(x: 250, y: 900), CGPoint(x: -1200, y: -80)] {
+                let outset = Theme.Size.paletteGlassOutset
+                let compact = PalettePlacement.frame(at: anchor, size: compactSize, outset: outset)
+                expect(compact.width, compactSize.width + outset * 2, "glass has horizontal clearance")
+                expect(compact.height, compactSize.height + outset * 2, "glass has vertical clearance")
+                expect(
+                    PalettePlacement.anchor(of: compact, outset: outset) == anchor,
+                    "the visible anchor survives the window outset")
+                let moved = compact.offsetBy(dx: 137, dy: -53)
+                let movedAnchor = PalettePlacement.anchor(of: moved, outset: outset)
+                expect(
+                    movedAnchor == CGPoint(x: anchor.x + 137, y: anchor.y - 53),
+                    "drag uses the visible anchor")
+                let expanded = PalettePlacement.frame(at: movedAnchor, size: expandedSize, outset: 0)
+                expect(expanded.minX, movedAnchor.x, "expanding retains the visible left edge")
+                expect(expanded.maxY, movedAnchor.y, "expanding retains the visible top edge")
+                let collapsed = PalettePlacement.frame(
+                    at: PalettePlacement.anchor(of: expanded, outset: 0), size: compactSize, outset: outset)
+                expect(collapsed == moved, "collapse returns to the same drawing frame after a move")
+            }
+        }
+    }
 
     static func theDefaultPlacement() {
         let anchor = home(laptop)
@@ -150,72 +180,158 @@ struct PalettePlacementTests {
             "pushed one point further up it is dropped")
     }
 
-    // MARK: - Snapping home
+    // MARK: - Invisible centre line
 
     static func snapping() {
-        let target = home(laptop)
-        expect(
-            PalettePlacement.isSnapping(target, to: target, within: snap),
-            "sitting exactly on the default placement snaps")
-
-        for offset in [CGPoint(x: snap, y: 0), CGPoint(x: 0, y: -snap), CGPoint(x: snap, y: snap)] {
-            let anchor = CGPoint(x: target.x + offset.x, y: target.y + offset.y)
+        for screen in [laptop, external] {
+            let origin = home(screen)
+            let expandedY = screen.midY + metrics.size.panelHeight / 2
+            func snapped(
+                _ point: CGPoint, previous: PalettePlacement.Snap? = nil, speed: CGFloat = 0
+            ) -> PalettePlacement.Snap {
+                PalettePlacement.snapped(
+                    point, home: origin, visibleFrame: screen,
+                    expandedHeight: metrics.size.panelHeight, within: snap,
+                    previous: previous, speed: speed)
+            }
+            let freeY = (origin.y + expandedY) / 2
+            let centered = PalettePlacement.Snap(
+                anchor: CGPoint(x: origin.x, y: freeY), centeredX: true, height: nil)
             expect(
-                PalettePlacement.isSnapping(anchor, to: target, within: snap),
-                "exactly the snap distance away on \(offset) still snaps")
+                snapped(CGPoint(x: origin.x + snap, y: freeY)).anchor.x, origin.x,
+                "the centre line catches at the right boundary")
+            expect(
+                snapped(CGPoint(x: origin.x - snap, y: freeY)).anchor.x, origin.x,
+                "the centre line catches at the left boundary")
+            expect(
+                !snapped(CGPoint(x: origin.x + snap + 1, y: freeY)).centeredX,
+                "an unlatched drag does not catch beyond the entry range")
+            expect(
+                snapped(CGPoint(x: origin.x + snap * 2, y: origin.y + 1), previous: centered)
+                    .height == .home,
+                "a latched drag holds the centre line and its height detent twice as far")
+            expect(
+                !snapped(
+                    CGPoint(x: origin.x + snap * 2 + 1, y: origin.y + 1),
+                    previous: centered
+                ).centeredX,
+                "a latched drag releases beyond twice the entry range")
+            expect(
+                snapped(CGPoint(x: origin.x + snap + 1, y: origin.y + 1)).anchor
+                    == CGPoint(x: origin.x + snap + 1, y: origin.y + 1),
+                "the home detent does not extend horizontally")
+            expect(
+                snapped(CGPoint(x: origin.x + snap + 1, y: expandedY + 1)).height == nil,
+                "the expanded detent does not extend horizontally")
+            expect(
+                snapped(CGPoint(x: origin.x + 1, y: origin.y + snap)).height == .home,
+                "the home detent catches on the centre line")
+            expect(
+                snapped(CGPoint(x: origin.x + 1, y: expandedY - snap)).anchor.y,
+                expandedY, "the expanded detent centres the full-height palette")
+            expect(
+                snapped(CGPoint(x: origin.x + 1, y: freeY)).anchor.y, freeY,
+                "height remains free between the two detents")
+            let fast = PalettePlacement.maxSnapEntrySpeedPointsPerSecond + 1
+            expect(
+                !snapped(CGPoint(x: origin.x + 1, y: freeY), speed: fast).centeredX,
+                "a fast pass does not enter the centre line")
+            expect(
+                snapped(CGPoint(x: origin.x + 1, y: freeY), speed: fast - 1).centeredX,
+                "a deliberate pass can still enter the centre line")
+            expect(
+                snapped(CGPoint(x: origin.x + snap * 2, y: freeY), previous: centered, speed: fast)
+                    .centeredX,
+                "speed does not release an already held centre line")
+            expect(
+                snapped(CGPoint(x: origin.x + 1, y: origin.y + 1), previous: centered, speed: fast)
+                    .height == nil,
+                "a fast pass on the centre line does not enter a height detent")
+            let held = PalettePlacement.Snap(anchor: origin, centeredX: true, height: .home)
+            expect(
+                snapped(CGPoint(x: origin.x + 1, y: origin.y + 1), previous: held, speed: fast)
+                    .height == .home,
+                "speed does not release an already held detent")
         }
+    }
 
-        // Both axes have to be inside: near in x but far in y is not a snap.
-        expect(
-            !PalettePlacement.isSnapping(
-                CGPoint(x: target.x, y: target.y + snap + 1), to: target, within: snap),
-            "one point beyond the threshold in y does not snap")
-        expect(
-            !PalettePlacement.isSnapping(
-                CGPoint(x: target.x + snap + 1, y: target.y), to: target, within: snap),
-            "nor does one point beyond it in x")
-        expect(
-            !PalettePlacement.isSnapping(
-                CGPoint(x: target.x + 300, y: target.y - 300), to: target, within: snap),
-            "and a panel dragged properly aside stays where it was dropped")
+    static func expandedDetentFollowsGeometry() {
+        let shifted = CGRect(x: 300, y: 50, width: 1800, height: 1000)
+        for size in InterfaceSize.allCases {
+            let panelHeight = size.metrics.size.panelHeight
+            let top = PalettePlacement.expandedCenterY(
+                in: shifted, expandedHeight: panelHeight)
+            expect(
+                top - panelHeight / 2, shifted.midY,
+                "the expanded detent stays centred after display or Interface Size changes")
+        }
     }
 
     // MARK: - Menu panels
 
     static func menuPanelAnchors() {
         let parent = CGRect(x: 100, y: 200, width: 750, height: 475)
+        let visible = CGRect(x: 0, y: -400, width: 1440, height: 1200)
         let content = CGSize(width: 276, height: 240)
         let inset = metrics.spacing.md
         let headerExtent = metrics.size.headerPadding + metrics.size.headerHeight
 
         let leading = MenuPanelCorner.bottomLeading.frame(
-            contentSize: content, parentFrame: parent, inset: inset,
+            contentSize: content, parentFrame: parent, visibleFrame: visible, inset: inset,
             headerExtent: headerExtent)
         expect(leading.minX, parent.minX + inset, "the left menu follows the footer's leading edge")
         expect(leading.minY, parent.minY + inset, "the left menu follows the footer's bottom edge")
 
         let trailing = MenuPanelCorner.bottomTrailing.frame(
-            contentSize: content, parentFrame: parent, inset: inset,
+            contentSize: content, parentFrame: parent, visibleFrame: visible, inset: inset,
             headerExtent: headerExtent)
         expect(trailing.maxX, parent.maxX - inset, "the action menu follows the trailing button")
         expect(trailing.minY, parent.minY + inset, "the action menu follows the footer's bottom edge")
 
         let header = MenuPanelCorner.belowHeaderTrailing.frame(
-            contentSize: content, parentFrame: parent, inset: inset,
+            contentSize: content, parentFrame: parent, visibleFrame: visible, inset: inset,
             headerExtent: headerExtent)
         expect(header.maxX, parent.maxX - inset * 2, "a header menu follows its trailing control")
         expect(header.maxY, parent.maxY - headerExtent, "a header menu opens below the field")
 
-        let scale = Theme.MenuMotion.maximumScale
-        let leadingCanvas = MenuPanelCorner.bottomLeading.scaledFrame(leading, by: scale)
-        let trailingCanvas = MenuPanelCorner.bottomTrailing.scaledFrame(trailing, by: scale)
-        let headerCanvas = MenuPanelCorner.belowHeaderTrailing.scaledFrame(header, by: scale)
-        expect(leadingCanvas.minX, leading.minX, "left expansion keeps its leading edge fixed")
-        expect(leadingCanvas.minY, leading.minY, "left expansion keeps its bottom edge fixed")
-        expect(trailingCanvas.maxX, trailing.maxX, "right expansion keeps its trailing edge fixed")
-        expect(trailingCanvas.minY, trailing.minY, "right expansion keeps its bottom edge fixed")
-        expect(headerCanvas.maxX, header.maxX, "header expansion keeps its trailing edge fixed")
-        expect(headerCanvas.maxY, header.maxY, "header expansion keeps its top edge fixed")
+        let control = CGRect(x: 450, y: 100, width: 60, height: 34)
+        let controlCorner = MenuPanelCorner.belowControl(control)
+        let input = controlCorner.frame(
+            contentSize: content, parentFrame: parent, visibleFrame: visible,
+            inset: inset, headerExtent: headerExtent)
+        expect(input.maxX, parent.minX + control.maxX, "an input menu follows its control's trailing edge")
+        expect(
+            input.maxY, parent.maxY - control.maxY - inset, "an input menu converts the flipped control frame"
+        )
+        let inputLeadingCorner = MenuPanelCorner.belowControl(control, trailing: false)
+        let inputLeading = inputLeadingCorner.frame(
+            contentSize: content, parentFrame: parent, visibleFrame: visible,
+            inset: inset, headerExtent: headerExtent)
+        expect(inputLeading.minX, parent.minX + control.minX, "a leading input follows its control")
+        expect(inputLeading.maxY, input.maxY, "both input alignments open at the same height")
+
+        let bottomControl = MenuPanelCorner.belowControl(CGRect(x: 5, y: 420, width: 60, height: 34))
+        let constrained = bottomControl.frame(
+            contentSize: content, parentFrame: parent, visibleFrame: visible,
+            inset: inset, headerExtent: headerExtent)
+        expect(
+            constrained.maxY, parent.maxY - 454 - inset,
+            "a low input opens below its field even outside the palette")
+        expect(
+            constrained.minX, visible.minX + inset, "an input menu stays inside its display"
+        )
+        let nearBottom = CGRect(x: 0, y: 0, width: 1440, height: 800)
+        let flipped = bottomControl.frame(
+            contentSize: content, parentFrame: parent, visibleFrame: nearBottom,
+            inset: inset, headerExtent: headerExtent)
+        expect(flipped.minY, parent.maxY - 420 + inset, "a low input opens above to clear the Dock")
+        let rightControl = MenuPanelCorner.belowControl(
+            CGRect(x: 730, y: 100, width: 100, height: 34), trailing: false)
+        let clamped = rightControl.frame(
+            contentSize: content, parentFrame: parent,
+            visibleFrame: CGRect(x: 0, y: 0, width: 1000, height: 800),
+            inset: inset, headerExtent: headerExtent)
+        expect(clamped.maxX, 1000 - inset, "a leading menu clears the display's right edge")
     }
 
     // MARK: - The tokens these rules depend on

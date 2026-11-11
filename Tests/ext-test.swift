@@ -24,7 +24,7 @@ struct ExtensionTests {
         var calls: [String] = []
         var toasts: [String] = []
         var huds: [String] = []
-        var oauthTokens: [String: String] = [:]
+        var storedForms: [(command: String, values: [String: String])] = []
         private let fetcher = ExtensionFetcher()
         private let sockets = ExtensionWebSocketBridge()
 
@@ -33,6 +33,9 @@ struct ExtensionTests {
             if api == "proc", method == "wait" {
                 return ExtensionRuntime.jsonString(
                     from: try await ExtensionAsyncProcess.wait(arguments.first))
+            }
+            if api == "proc", method == "read" {
+                return ExtensionRuntime.jsonString(from: try await ExtensionAsyncProcess.read(arguments))
             }
             if api == "fetch" {
                 return ExtensionRuntime.jsonString(from: try await fetcher.request(arguments.first))
@@ -51,6 +54,13 @@ struct ExtensionTests {
             case "feedback.showHUD":
                 huds.append(arguments.first?.stringValue ?? "")
                 return ""
+            case "form.store":
+                storedForms.append(
+                    (
+                        arguments.first?.stringValue ?? "",
+                        arguments.dropFirst().first?.objectValue?.compactMapValues(\.stringValue) ?? [:]
+                    ))
+                return ""
             case "storage.get", "clipboard.readText":
                 return #""""#
             case "storage.all":
@@ -60,21 +70,6 @@ struct ExtensionTests {
                     #"{"name":"Finder","path":"/System/Library/CoreServices/Finder.app","bundleId":"com.apple.finder"}"#
             case "system.applications":
                 return "[]"
-            case "oauth.authorize":
-                let state = arguments[safe: 1]?.stringValue ?? ""
-                return "{\"authorizationCode\":\"auth_code_swift_test\",\"state\":\"\(state)\"}"
-            case "oauth.getTokens":
-                let providerId = arguments.first?.stringValue ?? ""
-                return oauthTokens[providerId] ?? ""
-            case "oauth.setTokens":
-                let providerId = arguments.first?.stringValue ?? ""
-                let tokens = arguments[safe: 1]?.stringValue ?? ""
-                oauthTokens[providerId] = tokens
-                return ""
-            case "oauth.removeTokens":
-                let providerId = arguments.first?.stringValue ?? ""
-                oauthTokens.removeValue(forKey: providerId)
-                return ""
             default:
                 return ""
             }
@@ -129,14 +124,14 @@ struct ExtensionTests {
     static func launchContext(
         extensionName: String = "fixture", command: String = "fixture",
         mode: ExtensionCommandMode = .view, assets: String = "/tmp",
-        preferences: [String: ExtensionPreferenceValue] = [:],
+        preferences: [String: ExtensionPreferenceValue] = [:], formValues: [String: String] = [:],
         arguments: [String: String] = [:], isDarkAppearance: Bool = true
     ) -> ExtensionLaunchContext {
         ExtensionLaunchContext(
             extensionName: extensionName, extensionTitle: extensionName, commandName: command,
             commandMode: mode, assetsPath: assets, supportPath: "/tmp",
-            preferences: preferences, caches: [:], arguments: arguments, fallbackText: nil,
-            isDarkAppearance: isDarkAppearance)
+            preferences: preferences, caches: [:], formValues: formValues, arguments: arguments,
+            fallbackText: nil, isDarkAppearance: isDarkAppearance)
     }
 
     /// `EXT_TEST_ARGS="hours=0,minutes=5"` — stands in for the palette's inline argument fields.
@@ -168,6 +163,15 @@ struct ExtensionTests {
         try? await Task.sleep(nanoseconds: milliseconds * 1_000_000)
     }
 
+    @MainActor
+    static func settle(until condition: () -> Bool) async {
+        let clock = ContinuousClock()
+        let deadline = clock.now.advanced(by: .seconds(5))
+        while !condition(), clock.now < deadline {
+            do { try await Task.sleep(for: .milliseconds(20)) } catch { return }
+        }
+    }
+
     // MARK: - Results
 
     nonisolated(unsafe) static var failures = 0
@@ -189,17 +193,72 @@ struct ExtensionTests {
         manifestChecks()
         renderNodeChecks()
         screenChecks()
+        navigationSearchChecks()
         actionIconChecks()
-        oauthUnitChecks()
         deepLinkChecks()
         nodeShimChecks()
         await runtimeChecks()
+        await bundledModuleChecks()
+        await navigationSearchRuntimeChecks()
         await searchAccessoryRuntimeChecks()
+        await formStoreValueRuntimeChecks()
         await nodeContractChecks()
+        await bufferEventChecks()
+        await sharedArrayBufferChecks()
+        await webAssemblyChecks()
         await asyncComponentChecks()
+        await menuBarRuntimeChecks()
+        await menuBarHostChecks()
+        await ExtensionFetchTests.runChecks()
 
         print("\n\(passes) passed, \(failures) failed")
         exit(failures == 0 ? 0 : 1)
+    }
+
+    @MainActor
+    static func bundledModuleChecks() async {
+        let base = FileManager.default.temporaryDirectory
+            .appendingPathComponent("ext-bundled-test-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: base) }
+        let source = base.appendingPathComponent("source", isDirectory: true)
+        let package = source.appendingPathComponent("node_modules/bundled", isDirectory: true)
+        let (runtime, _, recorder) = makeRuntime()
+        defer { runtime.shutdown() }
+        do {
+            try FileManager.default.createDirectory(at: package, withIntermediateDirectories: true)
+            let manifest =
+                #"{"name":"fixture","title":"Fixture","commands":[{"name":"main","title":"Main","mode":"view"}]}"#
+            try Data(manifest.utf8).write(to: source.appendingPathComponent("package.json"))
+            let command = #"""
+                const React = require("react");
+                const { Detail } = require("@raycast/api");
+                const value = require("bundled");
+                module.exports.default = () => React.createElement(Detail, { markdown: String(value) });
+                """#
+            try Data(command.utf8).write(to: source.appendingPathComponent("main.js"))
+            try Data(#"{"exports":{".":"./index.js","./data":"./data.json"}}"#.utf8)
+                .write(to: package.appendingPathComponent("package.json"))
+            try Data(#"module.exports = require("bundled/data").value + 1;"#.utf8)
+                .write(to: package.appendingPathComponent("index.js"))
+            try Data(#"{"value":41}"#.utf8).write(to: package.appendingPathComponent("data.json"))
+            let installed = try ExtensionCatalog.install(
+                from: source, in: base.appendingPathComponent("installed"))
+            let file = installed.directory.appendingPathComponent("main.js")
+            try await runtime.boot(config: .current(supportDirectory: base))
+            await runtime.start(
+                session: "bundled", code: try String(contentsOf: file, encoding: .utf8), file: file,
+                mode: .view, context: launchContext())
+            await settle(until: { recorder.trees.last?.activeRoot?.string("markdown") == "42" })
+            check(
+                "installed packages resolve in JavaScriptCore",
+                recorder.trees.last?.activeRoot?.string("markdown") == "42")
+            check(
+                "bundled packages report no native runtime failures", recorder.failures.isEmpty,
+                recorder.failures.joined())
+            await runtime.stop(session: "bundled")
+        } catch {
+            check("bundled module fixture completes", false, String(describing: error))
+        }
     }
 
     static func nodeShimChecks() {
@@ -250,6 +309,74 @@ struct ExtensionTests {
             "os.loadavg returns three finite values",
             loadAverages?.count == 3
                 && loadAverages?.allSatisfy { $0.doubleValue.isFinite && $0.doubleValue >= 0 } == true)
+
+        let interfaces = value("networkInterfaces") as? [[String: Any]] ?? []
+        check(
+            "os.networkInterfaces lists the IPv4 loopback as internal",
+            interfaces.contains {
+                $0["address"] as? String == "127.0.0.1" && $0["family"] as? String == "IPv4"
+                    && $0["internal"] as? Bool == true && $0["cidr"] as? String == "127.0.0.1/8"
+            },
+            "\(interfaces)")
+        check(
+            "os.networkInterfaces never exposes a hardware address",
+            !interfaces.isEmpty && interfaces.allSatisfy { $0["mac"] as? String == "00:00:00:00:00:00" })
+        check(
+            "os.networkInterfaces gives a scope ID to IPv6 addresses only",
+            interfaces.allSatisfy { ($0["scopeid"] is NSNumber) == ($0["family"] as? String == "IPv6") })
+    }
+
+    @MainActor
+    static func menuBarRuntimeChecks() async {
+        for (value, expected) in [("10m", 600.0), ("1h", 3600), ("1d", 86400), ("30s", 30), ("1s", 10)] {
+            check("interval \(value)", ExtensionRefreshPolicy.parse(value, floor: 10) == expected)
+        }
+        for value in ["", "0m", "-1m", "NaNm", "Infinityh", "1e308d", "5x"] {
+            check("reject interval \(value)", ExtensionRefreshPolicy.parse(value, floor: 10) == nil)
+        }
+        let (runtime, _, recorder) = makeRuntime()
+        defer { runtime.shutdown() }
+        try? await runtime.boot(config: .current(supportDirectory: FileManager.default.temporaryDirectory))
+        var context = launchContext(mode: .menuBar)
+        context.launchType = .background
+        context.launchContext = ["source": .string("fixture")]
+        let code = #"""
+            const React = require("react");
+            const { MenuBarExtra, environment } = require("@raycast/api");
+            module.exports.default = function(props) {
+              const [title, setTitle] = React.useState(props.launchType + "|" + environment.launchType);
+              return React.createElement(MenuBarExtra, { title, tooltip: props.launchContext.source },
+                React.createElement(MenuBarExtra.Item, { title: "Refresh", onAction: async (event) => {
+                  await new Promise(resolve => setTimeout(resolve, 40));
+                  setTitle(event.type);
+                }, alternate: React.createElement(MenuBarExtra.Item, { title: "Alternate", onAction() {} }) }));
+            };
+            """#
+        await runtime.start(
+            session: "bar", code: code, file: URL(fileURLWithPath: "/tmp/menu.js"),
+            mode: .menuBar, context: context)
+        await settle()
+        let root = recorder.trees.last?.activeRoot
+        check("menu-bar renders in JavaScriptCore", root?.type == "MenuBarExtra", recorder.failures.joined())
+        check(
+            "background launch reaches props and environment",
+            root?.string("title") == "background|background")
+        check("launch context reaches props", root?.string("tooltip") == "fixture")
+        check(
+            "alternate survives serialization",
+            root?.children.first?.node("alternate")?.handler("onAction") != nil)
+        if let handler = root?.children.first?.handler("onAction") {
+            await runtime.dispatch(
+                session: "bar", handler: handler, payload: #"[{"type":"right-click"}]"#,
+                completesSession: true)
+            check("menu action does not finish before its promise", !recorder.finished)
+            await settle()
+            check("menu action finishes after its promise", recorder.finished)
+            check(
+                "menu action forwards event",
+                recorder.trees.last?.activeRoot?.string("title") == "right-click")
+        }
+        await runtime.stop(session: "bar")
     }
 
     static func manifestChecks() {
@@ -294,8 +421,7 @@ struct ExtensionTests {
         check("commands", manifest.commands.count == 4, "\(manifest.commands.count)")
         check("view mode", manifest.commands[0].mode == .view)
         check("no-view mode", manifest.commands[1].mode == .noView)
-        check("menu-bar is unsupported", manifest.commands[2].mode.isSupported == false)
-        check("menu-bar explains itself", manifest.commands[2].mode.unsupportedReason != nil)
+        check("menu-bar mode", manifest.commands[2].mode == .menuBar)
         // Extensions branch on `environment.appearance`, so the host must not report a fixed one.
         check(
             "a dark host reports dark",
@@ -339,7 +465,6 @@ struct ExtensionTests {
             picked?["bundleId"] as? String == "com.apple.Terminal", String(describing: picked))
         check("an unset app picker is absent", prefs["browser"]?.runtimeValue(nil) == nil)
 
-        // A manifest with no commands isn't an extension Tinycast can run.
         check("rejects a manifest with no commands", ExtensionManifest(json: ["name": "x"]) == nil)
         check(
             "rejects a Windows-only manifest",
@@ -348,6 +473,15 @@ struct ExtensionTests {
                     "name": "w", "platforms": ["Windows"],
                     "commands": [["name": "c", "title": "C"]]
                 ])?.supportsMacOS == false)
+        let commands = [["name": "c", "title": "C"]]
+        check(
+            "the store lists an organisation's extension under its owner",
+            ExtensionManifest(json: ["name": "o", "author": "me", "owner": "org", "commands": commands])?
+                .storeHandle == "org")
+        check(
+            "and anyone else's under its author",
+            ExtensionManifest(json: ["name": "a", "author": "me", "commands": commands])?.storeHandle
+                == "me")
 
         // Launcher round-trip: an entry id must decode back to the same command.
         let reference = ExtensionCommandRef(extensionName: "@scope/demo", commandName: "search")
@@ -766,82 +900,6 @@ struct ExtensionTests {
             String(describing: destructiveArtwork))
     }
 
-    private final class MockTokenStore: ExtensionOAuthTokenStore, @unchecked Sendable {
-        var storage: [String: String] = [:]
-
-        func get(account: String) -> String? {
-            storage[account]
-        }
-
-        func set(_ value: String, account: String) -> Bool {
-            storage[account] = value
-            return true
-        }
-
-        func remove(account: String) -> Bool {
-            storage.removeValue(forKey: account) != nil
-        }
-
-        func removeAll(prefix: String, exactMatch: String) {
-            storage = storage.filter { key, _ in
-                key != exactMatch && !key.hasPrefix(prefix)
-            }
-        }
-    }
-
-    @MainActor
-    static func oauthUnitChecks() {
-        let originalStore = ExtensionOAuthKeychain.store
-        ExtensionOAuthKeychain.store = MockTokenStore()
-        defer { ExtensionOAuthKeychain.store = originalStore }
-
-        // Keychain round-trip
-        let extName = "com.test.unit"
-        let provId = "unit_provider"
-        let json = "{\"accessToken\":\"token_xyz\",\"refreshToken\":\"refresh_abc\"}"
-
-        ExtensionOAuthKeychain.setTokens(json, extensionName: extName, providerId: provId)
-        let read = ExtensionOAuthKeychain.getTokens(extensionName: extName, providerId: provId)
-        check("OAuth Keychain sets and gets tokens", read == json, read ?? "nil")
-
-        ExtensionOAuthKeychain.removeTokens(extensionName: extName, providerId: provId)
-        let afterRemove = ExtensionOAuthKeychain.getTokens(extensionName: extName, providerId: provId)
-        check("OAuth Keychain removes tokens", afterRemove == nil, afterRemove ?? "not nil")
-
-        ExtensionOAuthKeychain.setTokens(json, extensionName: extName, providerId: "prov1")
-        ExtensionOAuthKeychain.setTokens(json, extensionName: extName, providerId: "prov2")
-        ExtensionOAuthKeychain.removeAllTokens(extensionName: extName)
-        let afterRemoveAll1 = ExtensionOAuthKeychain.getTokens(extensionName: extName, providerId: "prov1")
-        let afterRemoveAll2 = ExtensionOAuthKeychain.getTokens(extensionName: extName, providerId: "prov2")
-        check(
-            "OAuth Keychain removeAllTokens clears all for extension",
-            afterRemoveAll1 == nil && afterRemoveAll2 == nil)
-
-        // URL parsing in ExtensionOAuthSession
-        let raycastURL = URL(string: "raycast://oauth?code=auth_123&state=state_456")!
-        let params = ExtensionOAuthSession.parseCallback(url: raycastURL)
-        check(
-            "parseCallback parses query parameters",
-            params["code"] == "auth_123" && params["state"] == "state_456")
-
-        let fragmentURL = URL(string: "raycast://oauth#access_token=token_xyz&state=state_789")!
-        let fragParams = ExtensionOAuthSession.parseCallback(url: fragmentURL)
-        check(
-            "parseCallback parses hash fragment",
-            fragParams["access_token"] == "token_xyz" && fragParams["state"] == "state_789")
-
-        let nonOAuthURL = URL(string: "raycast://extensions/installed")!
-        check(
-            "handleCallbackURL ignores a non-oauth URL",
-            ExtensionOAuthSession.handleCallbackURL(nonOAuthURL) == .ignored)
-
-        // A callback with nothing waiting for it is reported, not silently dropped.
-        let strayURL = URL(string: "tinycast://oauth?code=abc&state=xyz")!
-        check(
-            "handleCallbackURL reports an expired callback",
-            ExtensionOAuthSession.handleCallbackURL(strayURL) == .expired)
-    }
-
     static func deepLinkChecks() {
         let canonical = ExtensionDeepLink.parse(
             url: URL(string: "raycast://extensions/linear/linear/create-issue")!)
@@ -858,12 +916,79 @@ struct ExtensionTests {
         let tiny = ExtensionDeepLink.parse(
             url: URL(string: "tinycast://extensions/linear/linear/create-issue")!)
         check("deeplink mirrors raycast:// as tinycast://", tiny == canonical)
+        let copied = ExtensionDeepLink.url(
+            extensionName: "linear/linear", commandName: "create-issue", arguments: [:], scheme: "tinycast")
+        check(
+            "a copied scoped deeplink parses back to its command",
+            copied.flatMap(ExtensionDeepLink.parse) == canonical, String(describing: copied))
+        let copiedBare = ExtensionDeepLink.url(
+            extensionName: "demo", commandName: "search", arguments: [:], scheme: "tinycast-dev")
+        check(
+            "a copied bare deeplink parses back to its command",
+            copiedBare.flatMap(ExtensionDeepLink.parse)?.extensionCandidates == ["demo"],
+            String(describing: copiedBare))
+        let typed = ["query": "a & b = c + d", "tag": "café ✓"]
+        let copiedTyped = ExtensionDeepLink.url(
+            extensionName: "demo", commandName: "search", arguments: typed, scheme: "tinycast")
+        check(
+            "a copied deeplink carries the arguments typed into the row",
+            copiedTyped.flatMap(ExtensionDeepLink.parse)?.arguments == typed, String(describing: copiedTyped))
 
         let bare = ExtensionDeepLink.parse(url: URL(string: "raycast://extensions/demo/search")!)
         check(
             "deeplink without an owner parses",
             bare?.ownerOrAuthor == nil && bare?.extensionName == "demo"
                 && bare?.commandName == "search")
+
+        let installURL = URL(string: "raycast://extensions/linear/linear?source=webstore")!
+        let install = ExtensionDeepLink.Route.storeInstall(.init(handle: "linear", name: "linear"))
+        check(
+            "store Install routes by owner and extension",
+            ExtensionDeepLink.route(url: installURL) == install)
+        check("store Install is never parsed as a command", ExtensionDeepLink.parse(url: installURL) == nil)
+        check(
+            "store Install accepts the Tinycast scheme",
+            ExtensionDeepLink.route(
+                url: URL(string: "tinycast://extensions/linear/linear?source=webstore")!) == install)
+        check(
+            "store Install accepts the path-based scheme",
+            ExtensionDeepLink.route(
+                url: URL(string: "com.raycast:/extensions/linear/linear?source=webstore")!) == install)
+        check(
+            "store Install keeps the publisher separate from the slug",
+            ExtensionDeepLink.route(
+                url: URL(string: "raycast://extensions/acme/demo?source=webstore")!)
+                == .storeInstall(.init(handle: "acme", name: "demo")))
+        check(
+            "store Install decodes path and query values",
+            ExtensionDeepLink.route(
+                url: URL(string: "raycast://extensions/ac%6De/de%6Do?source=web%73tore")!)
+                == .storeInstall(.init(handle: "acme", name: "demo")))
+        check(
+            "store Install tolerates other query parameters and a trailing slash",
+            ExtensionDeepLink.route(
+                url: URL(string: "raycast://extensions/linear/linear/?source=webstore&ref=popular")!)
+                == install)
+        check(
+            "command route preserves short links",
+            ExtensionDeepLink.route(url: URL(string: "raycast://extensions/demo/search")!)
+                == bare.map(ExtensionDeepLink.Route.command))
+        check(
+            "a different source preserves short command links",
+            ExtensionDeepLink.parse(url: URL(string: "raycast://extensions/demo/search?source=shortcut")!)
+                == bare)
+        check(
+            "webstore source preserves a fully qualified command link",
+            ExtensionDeepLink.parse(
+                url: URL(string: "raycast://extensions/linear/linear/create-issue?source=webstore")!)
+                == canonical)
+        check(
+            "store route rejects an incomplete Install link",
+            ExtensionDeepLink.route(url: URL(string: "raycast://extensions/linear?source=webstore")!) == nil)
+        check(
+            "store route rejects other schemes",
+            ExtensionDeepLink.route(
+                url: URL(string: "https://extensions/linear/linear?source=webstore")!) == nil)
 
         let args = ExtensionDeepLink.parse(
             url: URL(
@@ -890,6 +1015,24 @@ struct ExtensionTests {
             "deeplink reads fallback text and background launch",
             full?.fallbackText == "hello" && full?.launchType == .background)
 
+        let expectedContext: [String: RenderValue] = [
+            "id": .string("note-1"), "pinned": .bool(true), "tags": .array([.string("a")])
+        ]
+        let encodedContext =
+            #"{"id":"note-1","pinned":true,"tags":["a"]}"#
+            .addingPercentEncoding(withAllowedCharacters: .alphanumerics) ?? ""
+        for name in ["context", "launchContext"] {
+            let withContext = ExtensionDeepLink.parse(
+                url: URL(string: "raycast://extensions/demo/search?\(name)=\(encodedContext)")!)
+            check(
+                "deeplink decodes \(name) JSON",
+                withContext?.launchContext == expectedContext,
+                String(describing: withContext?.launchContext))
+        }
+        check(
+            "deeplink treats a context that isn't an object as none",
+            ExtensionDeepLink.parseContext("[1]").isEmpty && ExtensionDeepLink.parseContext("nope").isEmpty)
+
         let legacy = ExtensionDeepLink.parse(
             url: URL(string: "com.raycast:/extensions/demo/search")!)
         check(
@@ -899,9 +1042,6 @@ struct ExtensionTests {
         check(
             "deeplink rejects a non-extensions link",
             ExtensionDeepLink.parse(url: URL(string: "raycast://confetti")!) == nil)
-        check(
-            "deeplink rejects an OAuth callback",
-            ExtensionDeepLink.parse(url: URL(string: "raycast://oauth?code=abc")!) == nil)
         check(
             "deeplink rejects other schemes",
             ExtensionDeepLink.parse(url: URL(string: "https://example.com/x")!) == nil)
@@ -915,6 +1055,114 @@ struct ExtensionTests {
         check(
             "deeplink rejects another extension",
             canonical?.matches(manifestName: "other/other") == false)
+    }
+
+    static func navigationSearchChecks() {
+        let parent = ExtensionSearchState.Screen(query: "github", selection: 2)
+        var search = ExtensionSearchState()
+        check(
+            "push starts with empty search and first row", search.navigate(to: 2, current: parent) == .init())
+        check("same-depth render leaves search unchanged", search.navigate(to: 2, current: .init()) == nil)
+        check("pop restores parent query and row", search.navigate(to: 1, current: .init()) == parent)
+        search.queryChanged(to: parent.query)
+        check(
+            "query landing preserves restored row", search.landingSelection(for: "github", rowCount: 4) == 2)
+        check(
+            "repeated landing preserves restored row",
+            search.landingSelection(for: "github", rowCount: 4) == 2)
+        check("fewer rows clamp restored selection", search.landingSelection(for: "github", rowCount: 1) == 0)
+        check("empty parent has a valid landing", search.landingSelection(for: "github", rowCount: 0) == 0)
+        search.queryChanged(to: "git")
+        check("edited query lands on first row", search.landingSelection(for: "git", rowCount: 4) == 0)
+        search.queryChanged(to: "github")
+        check(
+            "retyping old query never revives old selection",
+            search.landingSelection(for: "github", rowCount: 4) == 0)
+
+        let child = ExtensionSearchState.Screen(query: "username", selection: 1)
+        _ = search.navigate(to: 2, current: parent)
+        _ = search.navigate(to: 3, current: child)
+        check("nested pop restores immediate parent", search.navigate(to: 2, current: .init()) == child)
+        check("nested pop restores root", search.navigate(to: 1, current: child) == parent)
+        _ = search.navigate(to: 3, current: parent)
+        check(
+            "coalesced push gives skipped screen empty search",
+            search.navigate(to: 2, current: .init()) == .init())
+        check("coalesced push preserves root", search.navigate(to: 1, current: .init()) == parent)
+        _ = search.navigate(to: 2, current: parent)
+        _ = search.navigate(to: 3, current: child)
+        check("multi-level pop restores root", search.navigate(to: 1, current: .init()) == parent)
+
+        let empty = ExtensionSearchState.Screen(selection: 3)
+        _ = search.navigate(to: 2, current: empty)
+        check("equal empty queries still restore row", search.navigate(to: 1, current: .init()) == empty)
+        check("invalid depth does not change search", search.navigate(to: 0, current: parent) == nil)
+        search = ExtensionSearchState()
+        check("new session forgets restored selection", search.landingSelection(for: "", rowCount: 4) == 0)
+        check("new session has no previous parents", search.navigate(to: 1, current: child) == nil)
+    }
+
+    @MainActor
+    static func navigationSearchRuntimeChecks() async {
+        let (runtime, host, recorder) = makeRuntime()
+        defer { runtime.shutdown() }
+        do {
+            try await runtime.boot(config: .current(supportDirectory: URL(fileURLWithPath: "/tmp")))
+        } catch {
+            check("navigation runtime boots", false, "\(error)")
+            return
+        }
+        let command = """
+            const { createElement: h } = require("react");
+            const { List, ActionPanel, Action, useNavigation } = require("@raycast/api");
+            function Details() {
+              return h(List, null,
+                h(List.Item, { title: "Username" }), h(List.Item, { title: "Password" }));
+            }
+            exports.default = function Command() {
+              const { push } = useNavigation();
+              return h(List, null, h(List.Item, { title: "GitHub account", actions:
+                h(ActionPanel, null, h(Action, { title: "Show Details", onAction: () => push(h(Details)) })) }));
+            };
+            """
+        await runtime.start(
+            session: "navigation", code: command, file: URL(fileURLWithPath: "/tmp/navigation.js"),
+            mode: .view, context: launchContext())
+        await settle()
+        guard let parent = recorder.trees.last,
+            let item = ExtensionScreen(tree: parent, query: "github").items.first,
+            let handler = ExtensionScreen.actions(in: item.node.node("actions")).first?.handler
+        else {
+            check("navigation fixture renders searchable parent", false)
+            return
+        }
+        let original = ExtensionSearchState.Screen(query: "github", selection: 0)
+        var search = ExtensionSearchState()
+        await runtime.dispatch(session: "navigation", handler: handler, payload: "[]")
+        await settle()
+        guard let details = recorder.trees.last,
+            let pushed = search.navigate(to: details.depth, current: original)
+        else {
+            check("navigation fixture pushes a list", false)
+            return
+        }
+        check(
+            "old query reproduces hidden details",
+            ExtensionScreen(tree: details, query: original.query).items.isEmpty)
+        check(
+            "push exposes all detail rows",
+            ExtensionScreen(tree: details, query: pushed.query).items.count == 2)
+        check("runtime pops detail list", await runtime.popNavigation(session: "navigation"))
+        await settle()
+        let restored = recorder.trees.last.flatMap {
+            search.navigate(to: $0.depth, current: pushed)
+        }
+        check("runtime pop restores original search", restored == original)
+        check(
+            "navigation reports no runtime failures", recorder.failures.isEmpty,
+            recorder.failures.joined(separator: "\n"))
+        check("navigation needs no external calls", host.calls.isEmpty)
+        await runtime.stop(session: "navigation")
     }
 
     // MARK: - End-to-end through JavaScriptCore
@@ -938,7 +1186,6 @@ struct ExtensionTests {
             return
         }
 
-        // A synthetic command exercising React state, the node shims, timers and host calls.
         let command = """
             "use strict";
             const { List, ActionPanel, Action, Icon, showToast, Toast } = require("@raycast/api");
@@ -973,6 +1220,9 @@ struct ExtensionTests {
               const errorCode = (callback) => {
                 try { callback(); return "none"; } catch (error) { return error.code; }
               };
+              const errorMessage = (callback) => {
+                try { callback(); return "none"; } catch (error) { return error.message; }
+              };
               const filePaths = [
                 fileURLToPath("file:///Applications/Tinycast%20Beta.app"),
                 fileURLToPath(pathToFileURL("/tmp/a#b.png")),
@@ -995,6 +1245,22 @@ struct ExtensionTests {
               const encrypted = Buffer.concat([encrypter.update("hello tinycast"), encrypter.final()]);
               const decrypter = crypto.createDecipheriv("aes-256-cbc", "k".repeat(32), Buffer.from("i".repeat(16)));
               const ecb = crypto.createCipheriv("aes-128-ecb", Buffer.alloc(16, 1), null).setAutoPadding(false);
+              const gcmKey = Buffer.alloc(32, 7);
+              const gcmSeal = (iv, aad) => {
+                const cipher = crypto.createCipheriv("aes-256-gcm", gcmKey, iv);
+                if (aad) cipher.setAAD(aad);
+                const ciphertext = Buffer.concat([cipher.update("hello gcm"), cipher.final()]);
+                return { ciphertext, tag: cipher.getAuthTag() };
+              };
+              const gcmOpen = (iv, sealed, aad) => {
+                const decipher = crypto.createDecipheriv("aes-256-gcm", gcmKey, iv);
+                if (aad) decipher.setAAD(aad);
+                decipher.setAuthTag(sealed.tag);
+                return Buffer.concat([decipher.update(sealed.ciphertext), decipher.final()]).toString("utf8");
+              };
+              const shortNonce = gcmSeal(Buffer.from("gcm-nonce-12"));
+              // A 16-byte nonce proves CryptoKit derives a long GCM nonce the way Node does.
+              const longNonce = gcmSeal(Buffer.alloc(16, 9), Buffer.from("header"));
               const cipherShim = [
                 crypto.pbkdf2Sync("password", "salt", 1000, 16, "sha512").toString("hex"),
                 crypto.pbkdf2Sync("", "", 1, 8, "SHA-256").toString("hex"),
@@ -1009,6 +1275,10 @@ struct ExtensionTests {
                 }),
                 errorCode(() => crypto.createCipheriv("aes-256-cbc", "short", "i".repeat(16))),
                 errorCode(() => crypto.pbkdf2Sync("p", "s", 1, 8, "nope")),
+                shortNonce.tag.toString("hex") + ":" + shortNonce.ciphertext.toString("hex"),
+                longNonce.tag.toString("hex") + ":" + longNonce.ciphertext.toString("hex"),
+                gcmOpen(Buffer.alloc(16, 9), longNonce, Buffer.from("header")),
+                errorMessage(() => gcmOpen(Buffer.alloc(16, 9), longNonce)),
                 derived,
               ].join(",");
               return h(List, { navigationTitle: "Synthetic", isLoading: false },
@@ -1028,7 +1298,14 @@ struct ExtensionTests {
         await runtime.start(
             session: "s1", code: command, file: URL(fileURLWithPath: "/tmp/synthetic.js"),
             mode: .view, context: launchContext())
-        await settle()
+        await settle(until: {
+            guard let tree = recorder.trees.last else { return false }
+            let item = ExtensionScreen(tree: tree, query: "").items.first
+            let crypto = ExtensionAccessoriesView_labelForTest(
+                item?.node.array("accessories").dropFirst(4).first)
+            return item?.node.string("title") == "count=1" && host.toasts == ["hello"]
+                && crypto?.hasSuffix(",6cba6dd1d44f53a3") == true
+        })
 
         check("no failures", recorder.failures.isEmpty, recorder.failures.joined(separator: "\n"))
         check("rendered at least once", !recorder.trees.isEmpty)
@@ -1074,13 +1351,16 @@ struct ExtensionTests {
                 + "ERR_INVALID_URL_SCHEME",
             String(describing: screen.items.first?.node.array("accessories").dropFirst(2).first))
         check(
-            "crypto shim derives PBKDF2 keys and round-trips AES like Node",
+            "crypto shim derives PBKDF2 keys, round-trips AES and authenticates GCM like Node",
             ExtensionAccessoriesView_labelForTest(
                 screen.items.first?.node.array("accessories").dropFirst(4).first)
                 == "afe6c5530785b6cc6b1c6453384731bd,f7ce0b653d2d72a4,5d11c49af18b4b3e482508362bd2c857,"
                 + "eb7b227687302ff167fef6a04d9f99f3,"
                 + "hello tinycast,17d614f379a9359077e95577fd31c20a,ERR_OSSL_BAD_DECRYPT,"
-                + "ERR_CRYPTO_INVALID_KEYLEN,ERR_CRYPTO_INVALID_DIGEST,6cba6dd1d44f53a3",
+                + "ERR_CRYPTO_INVALID_KEYLEN,ERR_CRYPTO_INVALID_DIGEST,"
+                + "875a7af65e66ba29298577f2c937c48b:589dd2d6d2696c5310,"
+                + "749e7f715a23139cbfa9b3259ab594e1:aaefe159005653143a,hello gcm,"
+                + "Unsupported state or unable to authenticate data,6cba6dd1d44f53a3",
             String(describing: screen.items.first?.node.array("accessories").dropFirst(4).first))
         check(
             "util shim answers debuglog, stripVTControlCharacters, aborted and inspect.custom",
@@ -1088,60 +1368,24 @@ struct ExtensionTests {
                 == "function,false,undefined,red,n=2,true,function",
             String(describing: screen.items.first?.node.array("accessories").last))
 
-        // Dispatch the row's action and confirm the re-render.
         let actions = ExtensionScreen.actions(in: screen.actionPanel(forItemAt: 0))
         check("action is dispatchable", actions.first?.handler != nil)
         if let handler = actions.first?.handler {
             await runtime.dispatch(
                 session: "s1", handler: handler,
                 payload: ExtensionRuntime.jsonString(from: []))
-            await settle()
+            await settle(until: {
+                recorder.trees.last.map {
+                    ExtensionScreen(tree: $0, query: "").items.first?.node.string("title")
+                }
+                    == "count=11"
+            })
             screen = ExtensionScreen(tree: recorder.trees.last!, query: "")
             check(
                 "action re-rendered the row",
                 screen.items.first?.node.string("title") == "count=11",
                 screen.items.first?.node.string("title") ?? "nil")
         }
-
-        // OAuth PKCE and TokenSet runtime tests
-        let (oauthRuntime, oauthHost, oauthRecorder) = makeRuntime()
-        try? await oauthRuntime.boot(
-            config: .current(supportDirectory: FileManager.default.temporaryDirectory))
-        let oauthCommand = """
-            "use strict";
-            const { OAuth, showHUD } = require("@raycast/api");
-            module.exports.default = async function () {
-              const client = new OAuth.PKCEClient({
-                redirectMethod: OAuth.RedirectMethod.Web,
-                providerName: "GitHub",
-                providerId: "gh",
-              });
-              const req = await client.authorizationRequest({
-                endpoint: "https://github.com/login/oauth/authorize",
-                clientId: "id123",
-              });
-              const auth = await client.authorize(req);
-              const tokens = new OAuth.TokenSet({
-                accessToken: "token_" + auth.authorizationCode,
-                refreshToken: "refresh_123",
-                expiresIn: 3600,
-              });
-              await client.setTokens(tokens);
-              const read = await client.getTokens();
-              await showHUD(read.accessToken);
-            };
-            """
-        await oauthRuntime.start(
-            session: "sOAuth", code: oauthCommand,
-            file: URL(fileURLWithPath: "/tmp/oauth.js"), mode: .noView,
-            context: launchContext(mode: .noView))
-        await settle()
-        check("oauth command finished", oauthRecorder.finished, oauthRecorder.failures.joined())
-        check(
-            "oauth flow reached token storage",
-            oauthHost.huds == ["token_auth_code_swift_test"],
-            oauthHost.huds.joined(separator: ","))
-        await oauthRuntime.stop(session: "sOAuth")
 
         // Command arguments must reach `props.arguments`, and the bag must exist even when empty.
         let (withArguments, _, argumentRecorder) = makeRuntime()
@@ -1228,7 +1472,6 @@ struct ExtensionTests {
         await runtime.stop(session: "s1b")
         runtime.setDelegate(recorder)
 
-        // A no-view command runs headless and reports completion.
         let (headless, headlessHost, headlessRecorder) = makeRuntime()
         try? await headless.boot(
             config: .current(supportDirectory: FileManager.default.temporaryDirectory))
@@ -1236,8 +1479,10 @@ struct ExtensionTests {
             session: "s2",
             code: """
                 "use strict";
-                const { showHUD } = require("@raycast/api");
-                module.exports.default = async function () { await showHUD("done"); };
+                const api = require("@raycast/api");
+                module.exports.default = async function () {
+                  await api.showHUD("done");
+                };
                 """,
             file: URL(fileURLWithPath: "/tmp/headless.js"), mode: .noView,
             context: launchContext(mode: .noView))
@@ -1263,6 +1508,7 @@ struct ExtensionTests {
 
         await swiftHelperChecks()
         await processKillChecks()
+        await stdioDescriptorChecks()
         zlibChecks()
     }
 
@@ -1349,6 +1595,101 @@ struct ExtensionTests {
         await runtime.stop(session: "sAccessory")
     }
 
+    static let storeValueCommand = """
+        "use strict";
+        const { Form, ActionPanel, Action, showToast } = require("@raycast/api");
+        const React = require("react");
+        const h = React.createElement;
+        module.exports.default = function Command() {
+          return h(Form, {
+            actions: h(ActionPanel, null, h(Action.SubmitForm, {
+              title: "Generate",
+              onSubmit: (values) => showToast({ title: values.format + "|" + values.scratch + "|" + values.remember }),
+            })),
+          },
+            h(Form.TextField, { id: "format", storeValue: true }),
+            h(Form.TextField, { id: "scratch", defaultValue: "blank" }),
+            h(Form.Checkbox, { id: "remember", label: "Remember", storeValue: true }));
+        };
+        """
+
+    @MainActor
+    static func formStoreValueRuntimeChecks() async {
+        func field(_ id: String, in tree: RenderTree?) -> RenderNode? {
+            tree?.activeRoot?.children.first { $0.string("id") == id }
+        }
+
+        let (first, host, recorder) = makeRuntime()
+        try? await first.boot(config: .current(supportDirectory: FileManager.default.temporaryDirectory))
+        await first.start(
+            session: "sStore", code: storeValueCommand, file: URL(fileURLWithPath: "/tmp/store.js"),
+            mode: .view, context: launchContext(command: "generate"))
+        await settle(until: { field("format", in: recorder.trees.last) != nil })
+        check(
+            "a storeValue field without a saved value starts empty",
+            field("format", in: recorder.trees.last)?.string("value") == "")
+
+        for (id, value) in [("format", "{word}-{number:4}" as Any), ("scratch", "typed"), ("remember", true)]
+        {
+            guard let handler = field(id, in: recorder.trees.last)?.handler("onTinycastChange") else {
+                check("form field \(id) exposes a change handler", false)
+                return
+            }
+            await first.dispatch(
+                session: "sStore", handler: handler, payload: ExtensionRuntime.jsonString(from: [value]))
+        }
+        await settle()
+        check("editing a form stores nothing", host.storedForms.isEmpty)
+
+        guard
+            let submit = recorder.trees.last?.activeRoot?.firstDescendant(ofType: "Action")?.handler(
+                "onAction")
+        else {
+            check("the form exposes its submit action", false)
+            return
+        }
+        await first.dispatch(session: "sStore", handler: submit, payload: "[]")
+        await settle(until: { !host.storedForms.isEmpty })
+        let stored = host.storedForms.last
+        check("submitting stores under the running command", stored?.command == "generate")
+        check(
+            "submitting stores only the storeValue fields",
+            stored?.values == ["format": #""{word}-{number:4}""#, "remember": "true"],
+            String(describing: stored?.values))
+        await first.stop(session: "sStore")
+        first.shutdown()
+
+        let (second, secondHost, secondRecorder) = makeRuntime()
+        try? await second.boot(config: .current(supportDirectory: FileManager.default.temporaryDirectory))
+        await second.start(
+            session: "sRestore", code: storeValueCommand, file: URL(fileURLWithPath: "/tmp/store.js"),
+            mode: .view,
+            context: launchContext(
+                command: "generate",
+                formValues: (stored?.values ?? [:]).merging(["scratch": #""leaked""#]) { $1 }))
+        await settle(until: { field("format", in: secondRecorder.trees.last) != nil })
+        let tree = secondRecorder.trees.last
+        check(
+            "a fresh runtime restores the submitted text",
+            field("format", in: tree)?.string("value") == "{word}-{number:4}",
+            field("format", in: tree)?.string("value") ?? "nil")
+        check("a fresh runtime restores the checkbox", field("remember", in: tree)?.bool("value") == true)
+        check(
+            "a field without storeValue ignores a saved value",
+            field("scratch", in: tree)?.string("value") == "blank")
+
+        if let submit = tree?.activeRoot?.firstDescendant(ofType: "Action")?.handler("onAction") {
+            await second.dispatch(session: "sRestore", handler: submit, payload: "[]")
+            await settle(until: { !secondHost.toasts.isEmpty })
+        }
+        check(
+            "a restored value reaches onSubmit",
+            secondHost.toasts == ["{word}-{number:4}|blank|true"],
+            secondHost.toasts.joined(separator: ","))
+        await second.stop(session: "sRestore")
+        second.shutdown()
+    }
+
     @MainActor
     static func nodeContractChecks() async {
         let directory = FileManager.default.temporaryDirectory
@@ -1402,6 +1743,31 @@ struct ExtensionTests {
               assert.equal(fs.readFileSync(moved).subarray(0, 3).toString(), "YaX");
               const listing = "\(directory.path)/listing";
               fs.mkdirSync(listing + "/folder", { recursive: true });
+              assert.equal(code(() => fs.mkdirSync(listing + "/folder")), "EEXIST");
+              assert.equal(code(() => fs.mkdirSync(moved)), "EEXIST");
+              assert.equal(code(() => fs.mkdirSync(listing + "/missing/child")), "ENOENT");
+              assert.equal(await call("mkdir", listing + "/folder").then(
+                () => "none", (error) => error.code), "EEXIST");
+              fs.mkdirSync(listing + "/folder", { recursive: true });
+              fs.utimesSync(listing, new Date(1000000), new Date(2000005));
+              const stamped = fs.statSync(listing);
+              assert.equal(stamped.atime.getTime(), 1000000);
+              assert.equal(stamped.mtime.getTime(), 2000005);
+              assert.equal(stamped.mode & 0o170000, 0o040000);
+              await call("utimes", listing, 3000, 4000.25);
+              assert.equal(fs.statSync(listing).mtime.getTime(), 4000250);
+              await fs.promises.utimes(listing, "5000", "6000.125");
+              assert.equal(fs.statSync(listing).mtime.getTime(), 6000125);
+              for (const stamp of [1700000000001, 1700000000999, Date.now()]) {
+                await call("utimes", listing, new Date(stamp), new Date(stamp));
+                assert.equal(fs.statSync(listing).mtime.getTime(), stamp);
+              }
+              const touched = Date.now();
+              fs.utimesSync(listing, -1, -1);
+              assert(fs.statSync(listing).mtimeMs >= touched);
+              assert(fs.statSync(listing).mtimeMs <= Date.now());
+              assert.equal(code(() => fs.utimesSync(listing + "/missing", 0, 0)), "ENOENT");
+              assert.equal(code(() => fs.utimesSync(listing, Infinity, 0)), "ERR_INVALID_ARG_VALUE");
               fs.writeFileSync(listing + "/entry", "");
               const handle = fs.opendirSync(listing);
               assert.equal(handle.path, listing);
@@ -1448,6 +1814,151 @@ struct ExtensionTests {
             "node file, zlib and stream contracts", host.huds == ["archive IO passed"],
             recorder.failures.joined(separator: "|"))
         await runtime.stop(session: "archive")
+        runtime.shutdown()
+    }
+
+    @MainActor
+    static func bufferEventChecks() async {
+        for (name, body) in [
+            (
+                "slow-buffer",
+                """
+                  const { Buffer } = require("buffer");
+                  const SafeBuffer = Buffer.from && Buffer.alloc && Buffer.allocUnsafe && Buffer.allocUnsafeSlow
+                    ? Buffer : function (size) { return Buffer(size); };
+                  assert.equal(new SafeBuffer(4).length, 4);
+                  assert(Object.keys(Buffer).includes("allocUnsafeSlow"));
+                  const first = SafeBuffer.allocUnsafeSlow(4), second = SafeBuffer.allocUnsafeSlow(4);
+                  first[0] = 91;
+                  assert.equal(Array.from(second).join(), "0,0,0,0");
+                  assert(first.buffer !== second.buffer);
+                  assert(Buffer.isBuffer(Buffer.allocUnsafeSlow(0)));
+                  assert.equal(Buffer.allocUnsafeSlow(0).length, 0);
+                """
+            ),
+            (
+                "once-receiver",
+                """
+                  const { EventEmitter } = require("events");
+                  const emitter = new EventEmitter(), calls = [];
+                  assert(emitter.once("ready", function (...args) {
+                    calls.push([this === emitter, ...args, emitter.listenerCount("ready")]);
+                    emitter.emit("ready", "recursive");
+                  }) === emitter);
+                  assert(emitter.emit("ready", "value", 7));
+                  assert.equal(JSON.stringify(calls), '[[true,"value",7,0]]');
+                  assert(!emitter.emit("ready", "again"));
+                  let removedCalls = 0;
+                  function removed() { removedCalls++; }
+                  emitter.once("removed", removed).removeListener("removed", removed);
+                  emitter.emit("removed");
+                  assert.equal(removedCalls, 0);
+                  const ordinary = [];
+                  emitter.on("ordinary", function (value) { ordinary.push([this === emitter, value]); });
+                  emitter.emit("ordinary", 1);
+                  emitter.emit("ordinary", 2);
+                  assert.equal(JSON.stringify(ordinary), "[[true,1],[true,2]]");
+                """
+            )
+        ] {
+            let (runtime, host, recorder) = makeRuntime()
+            try? await runtime.boot(
+                config: .current(supportDirectory: FileManager.default.temporaryDirectory))
+            let command = """
+                module.exports.default = async () => {
+                  const assert = require("assert");
+                  \(body)
+                  await require("@raycast/api").showHUD("\(name) passed");
+                };
+                """
+            await runtime.start(
+                session: name, code: command,
+                file: FileManager.default.temporaryDirectory.appendingPathComponent("\(name).js"),
+                mode: .noView, context: launchContext(mode: .noView))
+            await settle()
+            check(name, host.huds == ["\(name) passed"], recorder.failures.joined(separator: "|"))
+            await runtime.stop(session: name)
+            runtime.shutdown()
+        }
+    }
+
+    @MainActor
+    static func sharedArrayBufferChecks() async {
+        let (runtime, host, recorder) = makeRuntime()
+        defer { runtime.shutdown() }
+        do {
+            try await runtime.boot(
+                config: .current(supportDirectory: FileManager.default.temporaryDirectory))
+            let command = #"""
+                const assert = require("assert");
+                const lock = new Int32Array(new SharedArrayBuffer(4));
+                Atomics.store(lock, 0, 5);
+                assert.equal(Atomics.add(lock, 0, "3"), 5);
+                assert.equal(Atomics.compareExchange(lock, 0, "8", 0), 8);
+                assert.equal(Atomics.load(lock, 0), 0);
+                assert.equal(Atomics.wait(lock, 0, 1), "not-equal");
+                assert.equal(Atomics.wait(lock, undefined, 4294967296, 0), "timed-out");
+                assert.equal(Atomics.wait(lock, 0, 0, -1), "timed-out");
+                assert.equal(Atomics.notify(lock, 0), 0);
+                const started = Date.now();
+                assert.equal(Atomics.wait(lock, 0, 0, 40), "timed-out");
+                assert(Date.now() - started >= 40);
+                const big = new BigInt64Array(new SharedArrayBuffer(8));
+                assert.equal(Atomics.wait(big, 0, "0", 0), "timed-out");
+                assert.equal(Atomics.wait(big, 0, 1n), "not-equal");
+                for (const operation of [
+                  () => Atomics.wait(new Uint32Array(1), 0, 0, 0),
+                  () => Atomics.wait(lock, 0, 0n, 0),
+                  () => Atomics.wait(lock, 0, 0),
+                  () => Atomics.wait(lock, 0, 0, Infinity),
+                ]) assert.throws(operation, TypeError);
+                assert.throws(() => Atomics.wait(lock, 1, 0, 0), RangeError);
+                module.exports.default = async () => {
+                  await require("@raycast/api").showHUD("SharedArrayBuffer passed");
+                };
+                """#
+            await runtime.start(
+                session: "shared-buffer", code: command,
+                file: URL(fileURLWithPath: "/tmp/shared-buffer.js"), mode: .noView,
+                context: launchContext(mode: .noView))
+            await settle(until: { recorder.finished || !recorder.failures.isEmpty })
+            check(
+                "SharedArrayBuffer allocation and finite waits work in JavaScriptCore",
+                host.huds == ["SharedArrayBuffer passed"] && recorder.finished,
+                recorder.failures.joined(separator: "|"))
+            await runtime.stop(session: "shared-buffer")
+        } catch {
+            check("SharedArrayBuffer runtime boots", false, String(describing: error))
+        }
+    }
+
+    /// sql.js loads through `WebAssembly.instantiate`, whose promise never settled on the JS queue.
+    @MainActor
+    static func webAssemblyChecks() async {
+        let (runtime, host, recorder) = makeRuntime()
+        try? await runtime.boot(
+            config: .current(supportDirectory: FileManager.default.temporaryDirectory))
+        let command = """
+            module.exports.default = async () => {
+              const add = "AGFzbQEAAAABBwFgAn9/AX8DAgEABwcBA2FkZAAACgkBBwAgACABags=";
+              const bytes = Buffer.from(add, "base64");
+              const { module, instance } = await WebAssembly.instantiate(bytes);
+              const compiled = await WebAssembly.instantiate(await WebAssembly.compile(bytes));
+              const invalid = await WebAssembly.instantiate(new Uint8Array([0, 1, 2])).then(
+                () => "resolved", (error) => error instanceof WebAssembly.CompileError);
+              const sum = instance.exports.add(2, 3) + compiled.exports.add(4, 5);
+              const isModule = module instanceof WebAssembly.Module;
+              await require("@raycast/api").showHUD(`${isModule} ${sum} ${invalid}`);
+            };
+            """
+        await runtime.start(
+            session: "wasm", code: command, file: URL(fileURLWithPath: "/tmp/wasm.js"),
+            mode: .noView, context: launchContext(mode: .noView))
+        await settle()
+        check(
+            "WebAssembly promise APIs settle", host.huds == ["true 14 true"],
+            "\(host.huds) \(recorder.failures.joined(separator: "|"))")
+        await runtime.stop(session: "wasm")
         runtime.shutdown()
     }
 
@@ -1550,7 +2061,7 @@ struct ExtensionTests {
         await runtime.start(
             session: "sSwift", code: command, file: URL(fileURLWithPath: "/tmp/swift-helper.js"),
             mode: .view, context: launchContext())
-        await settle(1200)
+        await settle(until: { recorder.trees.last?.activeRoot?.string("markdown") == "0:#FF0000" })
 
         let mode = (try? FileManager.default.attributesOfItem(atPath: helper.path))
             .flatMap { $0[.posixPermissions] as? NSNumber }
@@ -1608,6 +2119,61 @@ struct ExtensionTests {
         await runtime.stop(session: "sKill")
     }
 
+    @MainActor
+    static func stdioDescriptorChecks() async {
+        let file = FileManager.default.temporaryDirectory
+            .appendingPathComponent("tinycast-stdio-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: file) }
+
+        let (runtime, _, recorder) = makeRuntime()
+        try? await runtime.boot(
+            config: .current(supportDirectory: FileManager.default.temporaryDirectory))
+        let command = """
+            "use strict";
+            const { Detail } = require("@raycast/api");
+            const React = require("react");
+            const fs = require("fs");
+            const { spawn, spawnSync } = require("child_process");
+            const run = (file, args, stdio) => new Promise((resolve) => {
+              const child = spawn(file, args, { stdio });
+              let out = "";
+              child.stdout.on("data", (chunk) => (out += chunk));
+              child.on("close", (code) => resolve(code + ":" + out.trim()));
+            });
+            module.exports.default = function Command() {
+              const [state, setState] = React.useState("pending");
+              React.useEffect(() => {
+                (async () => {
+                  const output = fs.openSync("\(file.path)", "wx");
+                  const wrote = await run("/bin/echo", ["hello"], ["ignore", output, "pipe"]);
+                  fs.closeSync(output);
+                  const input = fs.openSync("\(file.path)", "r");
+                  const read = await run("/bin/cat", [], [input, "pipe", "pipe"]);
+                  fs.closeSync(input);
+                  const syncInput = fs.openSync("\(file.path)", "r");
+                  const sync = spawnSync("/bin/cat", [], { stdio: [syncInput, "pipe", "pipe"] });
+                  fs.closeSync(syncInput);
+                  setState([wrote, read, sync.stdout.toString().trim()].join(","));
+                })().catch((error) => setState("threw:" + error.message));
+              }, []);
+              return React.createElement(Detail, { markdown: state });
+            };
+            """
+        await runtime.start(
+            session: "sStdio", code: command, file: URL(fileURLWithPath: "/tmp/stdio-descriptors.js"),
+            mode: .view, context: launchContext())
+        await settle(until: { recorder.trees.last?.activeRoot?.string("markdown") == "0:,0:hello,hello" })
+
+        check(
+            "a stdout descriptor receives the child's output",
+            (try? String(contentsOf: file, encoding: .utf8)) == "hello\n")
+        check(
+            "a stdin descriptor feeds spawn and spawnSync",
+            recorder.trees.last?.activeRoot?.string("markdown") == "0:,0:hello,hello",
+            recorder.trees.last?.activeRoot?.string("markdown") ?? "no tree")
+        await runtime.stop(session: "sStdio")
+    }
+
     /// `zlib` is the one node shim with no JS-side implementation to lean on.
     static func zlibChecks() {
         let payload = Data(String(repeating: "tinycast extensions ", count: 64).utf8)
@@ -1632,13 +2198,18 @@ struct ExtensionTests {
             print("Not an extension: \(directory.path)")
             exit(1)
         }
-        let runnable = manifest.commands.filter { $0.mode.isSupported }
+        let runnable = manifest.commands
         guard
             let target = commandName.flatMap({ name in runnable.first { $0.name == name } })
                 ?? runnable.first
         else {
             print("No runnable command in \(manifest.title)")
             exit(1)
+        }
+        if target.mode == .menuBar, ProcessInfo.processInfo.environment["EXT_TEST_MENU_BAR"] != nil {
+            await runInstalledMenuBar(
+                InstalledExtension(manifest: manifest, directory: directory), command: target)
+            exit(failures == 0 ? 0 : 1)
         }
         let bundle = directory.appendingPathComponent("\(target.name).js")
         guard let code = try? String(contentsOf: bundle, encoding: .utf8) else {

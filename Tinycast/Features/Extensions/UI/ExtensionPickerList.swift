@@ -4,13 +4,13 @@ import SwiftUI
 struct ExtensionPickerList: View {
     private var form: ExtensionFormMetrics { ExtensionFormMetrics(scale: metrics.scale) }
     @Environment(\.metrics) private var metrics
+    @Environment(\.displayScale) private var displayScale
     @Environment(\.isDarkAppearance) private var isDark
     /// Read for `hoverHighlightArmed`: a list landing under the pointer must light no row.
     @Environment(PaletteState.self) private var palette
     private var menuListInset: CGFloat { metrics.spacing.md }
     let items: [ExtensionPickerItem]
     let selection: Int
-    /// Values already chosen; a single-select picker passes the one it holds.
     let chosen: Set<String>
     let assetsPath: String?
     /// Fixed, never intrinsic, so the list cannot jitter as its rows change. A form's picker
@@ -21,6 +21,7 @@ struct ExtensionPickerList: View {
     /// Moves the highlight under the pointer, so mouse and keyboard share one selection.
     let onHighlight: (Int) -> Void
     var body: some View {
+        let shape = RoundedRectangle(cornerRadius: metrics.radius.menuPanel, style: .continuous)
         VStack(alignment: .leading, spacing: 0) {
             if let searchPlaceholder {
                 ExtensionMenuSearchField(
@@ -28,16 +29,16 @@ struct ExtensionPickerList: View {
                     verticalOffset: 0)
                 Rectangle()
                     .fill(Theme.Colors.separator)
-                    .frame(height: Theme.Size.hairline)
+                    // One device pixel, matching the actions panel's hairline.
+                    .frame(height: 1 / displayScale)
                     .accessibilityHidden(true)
             }
             list
                 .padding(searchPlaceholder == nil ? metrics.spacing.sm : 0)
         }
         .frame(width: width ?? form.controlWidth)
-        .glassEffect(
-            .regular, in: RoundedRectangle(cornerRadius: metrics.radius.menuPanel, style: .continuous)
-        )
+        .glassEffect(.regular, in: shape)
+        .clipShape(shape)
     }
 
     @ViewBuilder

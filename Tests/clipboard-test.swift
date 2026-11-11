@@ -7,13 +7,17 @@ struct ClipboardTests {
     static var failures = 0
     static var passes = 0
 
-    static func main() {
+    static func main() async throws {
         pinOrder()
         unpinRejoinsAsNewest()
         pasteLeavesPinsAlone()
+        try editRewritesInPlace()
+        try editReachesPastTheMemoryWindow()
+        editHonoursTheCaptureLimit()
         pinsSurvivePruningAndTheWindow()
         pinsLeadFilteredSearches()
         pinnedSlotResolutionUsesVisiblePins()
+        landingSkipsThePins()
         textFormClassification()
         colorParsing()
         colorFormatting()
@@ -24,18 +28,58 @@ struct ClipboardTests {
         persistence()
         exportSeesPastTheMemoryWindow()
         importedImagesArriveOnce()
+        imageCopiesLeaveWithTheirBlob()
+        orphanedCopiesAreSweptOnLoad()
+        try await retiredImageCapturesStayRetired()
         multiFileCopyMakesOneRowEach()
+        fileBatchesRespectTheMemoryWindow()
         referencedFilesOutliveTheirRows()
         filePathsAreNeverATextForm()
         fileEntriesAreFoundByNameAndFolder()
         fileKindClassification()
         importedFilesArriveOncePerPath()
+        defaultActionChords()
+        plainTextSkipsTheFile()
+        offersTextExtraction()
 
         print("\(passes)/\(passes + failures) passed")
         if failures > 0 { exit(1) }
     }
 
     // MARK: - Cases
+
+    static func retiredImageCapturesStayRetired() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("clipboard-capture-test-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = ClipboardStore(directory: directory)
+        let data = Data("captured image".utf8)
+        let beforeClear = store.captureGeneration
+        store.clearAll()
+        store.addImage(data, sourceBundleID: nil, capture: beforeClear)
+        let beforeClose = store.captureGeneration
+        store.close()
+        store.open()
+        store.addImage(data, sourceBundleID: nil, capture: beforeClose)
+        expect(store.items.isEmpty, "a capture retired during conversion never reaches history")
+        let images = directory.appendingPathComponent("images")
+        let blobs = try FileManager.default.contentsOfDirectory(atPath: images.path)
+        expect(
+            blobs.isEmpty,
+            "a capture retired before its write leaves no blob")
+
+        store.addImage(data, sourceBundleID: nil, capture: store.captureGeneration)
+        store.clearAll()
+        store.addImage(data, sourceBundleID: nil, capture: store.captureGeneration)
+        let deadline = ContinuousClock.now.advanced(by: .seconds(3))
+        while store.items.isEmpty, ContinuousClock.now < deadline {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        expect(store.items.count == 1, "a fresh capture succeeds after retiring an in-flight write")
+        let reopened = ClipboardStore(directory: directory)
+        reopened.load()
+        expect(reopened.items.count == 1, "only the fresh capture is persisted")
+    }
 
     /// Pins stack in pin order, oldest pin first, regardless of how old the entries are.
     static func pinOrder() {
@@ -96,6 +140,88 @@ struct ClipboardTests {
             expect(
                 texts(store) == ["one", "two", "three", "four"],
                 "an unpinned row still promotes to the head of the history")
+        }
+    }
+
+    /// An edit keeps the entry's id, pin and place; search and the database see only the new text.
+    static func editRewritesInPlace() throws {
+        try withStore { store, dir in
+            store.addText("first draft", sourceBundleID: nil)
+            store.addText("pinned draft", sourceBundleID: nil)
+            store.addText("newest", sourceBundleID: nil)
+            store.togglePinned(item(store, "pinned draft"))
+            let original = item(store, "first draft")
+
+            let edited = try store.updateText("final copy", of: original)
+            expect(edited?.id == original.id, "an edit keeps the entry's id")
+            expect(
+                texts(store) == ["pinned draft", "newest", "final copy"],
+                "an edit leaves the entry where it was")
+            expect(
+                store.search("draft", filter: .all).compactMap(\.text) == ["pinned draft"],
+                "the old text is no longer found")
+            expect(
+                store.search("final", filter: .all).map(\.id) == [original.id],
+                "the new text is found")
+
+            _ = try store.updateText("pinned final", of: item(store, "pinned draft"))
+            expect(item(store, "pinned final").isPinned, "an edit keeps the pin")
+
+            let reopened = ClipboardStore(directory: dir)
+            reopened.load()
+            expect(
+                texts(reopened) == ["pinned final", "newest", "final copy"],
+                "the edit is what reaches disk")
+
+            let deleted = item(store, "newest")
+            store.remove(deleted)
+            expect(try store.updateText("ghost", of: deleted) == nil, "a deleted entry cannot be edited")
+            expect(!texts(store).contains("ghost"), "and does not come back")
+
+            let image = ClipboardItem(imagePath: "/tmp/shot.png", sourceBundleID: nil)
+            expect(try store.updateText("caption", of: image) == nil, "only a text entry is editable")
+        }
+    }
+
+    /// An edit may hold no more text than capture would have recorded.
+    static func editHonoursTheCaptureLimit() {
+        withStore { store, _ in
+            store.addText("short", sourceBundleID: nil)
+            let longest = String(repeating: "a", count: ClipboardStore.maxTextLength)
+            expect(
+                (try? store.updateText(longest, of: item(store, "short"))) != nil,
+                "an edit at the limit saves")
+            do throws(ClipboardStore.UpdateError) {
+                _ = try store.updateText(longest + "a", of: item(store, longest))
+                fail("an edit past the limit is refused")
+            } catch {
+                expect(error == .tooLong, "an edit past the limit reports its length")
+            }
+            expect(texts(store) == [longest], "a refused edit leaves the entry as it was")
+        }
+    }
+
+    /// A row found past the resident window has nowhere in memory to change, so the memo must.
+    static func editReachesPastTheMemoryWindow() throws {
+        try withStore { store, _ in
+            let total = 1_200
+            store.importEntries(
+                (0..<total).map {
+                    ClipboardItem(
+                        id: UUID(), kind: .text, text: "entry \($0)", imagePath: nil,
+                        createdAt: Date().addingTimeInterval(TimeInterval($0 - total)),
+                        sourceBundleID: nil)
+                })
+            guard let oldest = store.search("entry 0", filter: .all).first else {
+                return fail("the oldest entry is found past the window")
+            }
+            expect(!store.items.contains { $0.id == oldest.id }, "the oldest entry is not resident")
+
+            _ = try store.updateText("renamed oldest", of: oldest)
+            expect(store.search("entry 0", filter: .all).isEmpty, "the memo drops the old text")
+            expect(
+                store.search("renamed", filter: .all).map(\.id) == [oldest.id],
+                "and search answers with the edit")
         }
     }
 
@@ -191,6 +317,42 @@ struct ClipboardTests {
             expect(
                 store.pinnedItem(at: 0, in: "", filter: .link) == nil,
                 "filter applies before pinned slot mapping")
+        }
+    }
+
+    /// A reset passes the pins for the newest clip; a typed query lands on its first match.
+    static func landingSkipsThePins() {
+        withStore { store, _ in
+            store.addText("alpha one", sourceBundleID: nil)
+            store.addText("beta two", sourceBundleID: nil)
+            store.addText("https://example.com", sourceBundleID: nil)
+            store.addText("beta three", sourceBundleID: nil)
+            expect(
+                store.landingIndex(in: "", filter: .all) == 0, "no pins: the newest clip is row 0")
+
+            store.togglePinned(item(store, "alpha one"))
+            store.togglePinned(item(store, "beta two"))
+            let landing = store.landingIndex(in: "", filter: .all)
+            expect(landing == 2, "nothing typed: the landing passes both pins")
+            expect(
+                store.search("", filter: .all)[landing].text == "beta three",
+                "and lands on the most recent copy")
+            expect(store.landingIndex(in: "  ", filter: .all) == 2, "a blank query is no query")
+            expect(
+                store.landingIndex(in: "beta", filter: .all) == 0,
+                "a typed query lands on its first match, even a pinned one")
+            expect(
+                store.landingIndex(in: "", filter: .text) == 2,
+                "a filter still passes the pins it shows")
+            expect(
+                store.landingIndex(in: "", filter: .link) == 0,
+                "and lands on its first row when it shows none")
+
+            store.togglePinned(item(store, "https://example.com"))
+            store.togglePinned(item(store, "beta three"))
+            expect(
+                store.landingIndex(in: "", filter: .all) == 0,
+                "an all-pinned list has no clip to pass to, so it stays on row 0")
         }
     }
 
@@ -324,7 +486,6 @@ struct ClipboardTests {
             "HSL round-trips back to the same sRGB components")
     }
 
-    /// What each notation reads as, and which of them an opaque colour is offered.
     static func colorFormatting() {
         guard let color = ColorValue.parse("#FF5733") else {
             expect(false, "the fixture parses")
@@ -494,7 +655,11 @@ struct ClipboardTests {
             expect(texts(reopened) == ["first", "third", "second"], "unpin after a reload")
 
             reopened.clearAll()
-            expect(reopened.items.isEmpty, "Clear History takes pins too")
+            expect(texts(reopened) == ["first"], "Clear History spares the pin")
+
+            let afterClear = ClipboardStore(directory: dir)
+            afterClear.load()
+            expect(texts(afterClear) == ["first"], "and the unpinned rows are gone from disk")
         }
     }
 
@@ -519,6 +684,72 @@ struct ClipboardTests {
             }
             expect(streamed == total, "the export streams every row, not just the window")
             expect(seen.count == total, "every row arrives exactly once")
+        }
+    }
+
+    static func imageCopiesLeaveWithTheirBlob() {
+        for way in ["removing", "clearing history", "a retention cut"] {
+            withStore { store, dir in
+                let blob = dir.appendingPathComponent("blob.png")
+                try? Data("png".utf8).write(to: blob)
+                let staged = ClipboardItem(
+                    imagePath: blob.path, createdAt: Date().addingTimeInterval(-2 * 86_400),
+                    sourceBundleID: nil)
+                ClipboardStore.importStoredItems(
+                    inDatabaseAt: store.dbURL, adoptingImagesInto: store.imagesDir, [staged])
+                store.load()
+                guard let item = store.items.first, let url = store.imageURL(for: item) else {
+                    return expect(false, "the adopted image is listed")
+                }
+                expect(store.ownsImage(of: item), "an adopted blob is ours to derive from")
+                let copies = ImageDerivative.all(of: url).map(\.url)
+                try? FileManager.default.createDirectory(
+                    at: ImageDerivative.folder(beside: url), withIntermediateDirectories: true)
+                for copy in copies { try? Data("copy".utf8).write(to: copy) }
+
+                switch way {
+                case "removing": store.remove(item)
+                case "clearing history": store.clearAll()
+                default:
+                    store.maxAge = 86_400
+                    store.enforceLimits()
+                }
+                let deadline = Date().addingTimeInterval(2)
+                while copies.contains(where: { FileManager.default.fileExists(atPath: $0.path) }),
+                    Date() < deadline
+                {
+                    RunLoop.current.run(until: Date().addingTimeInterval(0.01))
+                }
+                expect(
+                    !copies.contains { FileManager.default.fileExists(atPath: $0.path) },
+                    "\(way) deletes the copies")
+            }
+        }
+    }
+
+    /// A quit before a queued copy delete runs leaves orphaned copies; the next load sweeps them.
+    static func orphanedCopiesAreSweptOnLoad() {
+        withStore { store, dir in
+            let blob = dir.appendingPathComponent("kept.png")
+            try? Data("png".utf8).write(to: blob)
+            ClipboardStore.importStoredItems(
+                inDatabaseAt: store.dbURL, adoptingImagesInto: store.imagesDir,
+                [ClipboardItem(imagePath: blob.path, sourceBundleID: nil)])
+            let kept = ImageDerivative.all(of: store.imagesDir.appendingPathComponent("kept.png")).map(\.url)
+            let gone = store.imagesDir.appendingPathComponent("gone.png")
+            let orphans = ImageDerivative.all(of: gone).map(\.url)
+            try? FileManager.default.createDirectory(
+                at: ImageDerivative.folder(beside: kept[0]), withIntermediateDirectories: true)
+            for copy in kept + orphans { try? Data("copy".utf8).write(to: copy) }
+
+            store.load()
+            ImageDerivative.queue.sync {}
+            expect(
+                !orphans.contains { FileManager.default.fileExists(atPath: $0.path) },
+                "a copy whose blob is gone is swept on load")
+            expect(
+                kept.allSatisfy { FileManager.default.fileExists(atPath: $0.path) },
+                "a live blob's copies survive the sweep")
         }
     }
 
@@ -554,6 +785,33 @@ struct ClipboardTests {
                 "and the reader inserts them newest-last")
             store.addFiles(["/tmp/c.pdf"], sourceBundleID: nil)
             expect(store.items.count == 3, "re-copying the leading file adds no row")
+        }
+    }
+
+    static func fileBatchesRespectTheMemoryWindow() {
+        withStore { store, _ in
+            for index in 0..<1000 { store.addText("entry \(index)", sourceBundleID: nil) }
+            let pinned = item(store, "entry 0")
+            store.togglePinned(pinned)
+
+            for batch in 0..<3 {
+                let paths = (0..<32).map { "/Users/me/batch-\(batch)-\($0).txt" }
+                store.addFiles(paths, sourceBundleID: nil)
+                expect(store.items.count == 1000, "each file batch keeps the window bounded")
+                expect(
+                    store.items.prefix(paths.count).compactMap(\.filePath) == paths.reversed(),
+                    "the entire new batch stays in recency order")
+                expect(
+                    store.items.contains { $0.id == pinned.id && $0.isPinned },
+                    "trimming preserves the oldest pin")
+            }
+
+            expect(
+                store.items.last(where: { !$0.isPinned })?.text == "entry 97",
+                "trimming removes the oldest unpinned rows")
+            expect(
+                store.search("entry 1", filter: .text).contains { $0.text == "entry 1" },
+                "trimmed rows remain searchable on disk")
         }
     }
 
@@ -628,13 +886,74 @@ struct ClipboardTests {
         }
     }
 
+    /// The default takes ↵ and Paste its chord; the Paste and Copy defaults keep their old pair.
+    static func defaultActionChords() {
+        let text = ClipboardItem(text: "hello", sourceBundleID: nil)
+        let file = ClipboardItem(filePath: "/Users/me/report.pdf", sourceBundleID: nil)
+        let image = ClipboardItem(imagePath: "/tmp/shot.png", sourceBundleID: nil)
+        let expected: [ClipboardDefaultAction: [ClipboardDefaultAction]] = [
+            .paste: [.paste, .copy, .pastePlainText],
+            .copy: [.copy, .paste, .pastePlainText],
+            .pastePlainText: [.pastePlainText, .copy, .paste]
+        ]
+        for (defaultAction, actions) in expected {
+            for item in [text, file] {
+                expect(
+                    ClipboardChord.allCases.map { defaultAction.action(for: $0, on: item) } == actions,
+                    "\(defaultAction) orders ↵, ⌘↵, ⌃⌘↵ as \(actions) on a \(item.kind) entry")
+            }
+            let imageActions = ClipboardChord.allCases.map { defaultAction.action(for: $0, on: image) }
+            let paste: ClipboardDefaultAction = defaultAction == .copy ? .copy : .paste
+            expect(imageActions.first == paste, "\(defaultAction) on an image never pastes plain")
+            expect(imageActions.last == .some(nil), "and ⌃⌘↵ has nothing to run on it")
+        }
+    }
+
+    static func plainTextSkipsTheFile() {
+        expect(ClipboardItem(text: "hi", sourceBundleID: nil).plainText == "hi", "text is itself")
+        expect(
+            ClipboardItem(filePath: "/a/b.pdf", sourceBundleID: nil).plainText == "/a/b.pdf",
+            "a file is its path")
+        expect(
+            ClipboardItem(imagePath: "/a/b.png", sourceBundleID: nil).plainText == nil,
+            "an image has no plain text")
+    }
+
+    /// Copy Text is an image answer: a captured blob, or an image file — never text or a PDF.
+    static func offersTextExtraction() {
+        expect(
+            ClipboardItem(imagePath: "/tmp/shot.png", sourceBundleID: nil).offersTextExtraction,
+            "a captured image offers Copy Text")
+        expect(
+            !ClipboardItem(
+                id: UUID(), kind: .image, text: nil, imagePath: nil, createdAt: Date(),
+                sourceBundleID: nil
+            ).offersTextExtraction,
+            "an image entry without its blob does not")
+        expect(
+            !ClipboardItem(text: "hello", sourceBundleID: nil).offersTextExtraction,
+            "a text entry does not")
+        expect(
+            ClipboardItem(filePath: "/Users/me/shot.png", sourceBundleID: nil)
+                .offersTextExtraction,
+            "an image file copied in Finder offers Copy Text")
+        expect(
+            !ClipboardItem(filePath: "/Users/me/notes.txt", sourceBundleID: nil)
+                .offersTextExtraction,
+            "a text file does not")
+        expect(
+            !ClipboardItem(filePath: "/Users/me/report.pdf", sourceBundleID: nil)
+                .offersTextExtraction,
+            "a PDF stays a background-indexing capability")
+    }
+
     // MARK: - Harness
 
     /// Runs `body` against a store rooted in a fresh temp directory, torn down afterwards.
-    static func withStore(_ body: (ClipboardStore, URL) -> Void) {
+    static func withStore(_ body: (ClipboardStore, URL) throws -> Void) rethrows {
         let dir = scratchDirectory()
         defer { try? FileManager.default.removeItem(at: dir) }
-        body(ClipboardStore(directory: dir), dir)
+        try body(ClipboardStore(directory: dir), dir)
     }
 
     static func scratchDirectory() -> URL {

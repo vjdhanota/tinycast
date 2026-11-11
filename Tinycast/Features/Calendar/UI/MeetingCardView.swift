@@ -1,6 +1,5 @@
 import SwiftUI
 
-/// The join card above the launcher results; selectable like a row, Enter joins.
 struct MeetingCard: View {
     @Environment(\.metrics) private var metrics
     let meeting: MeetingEvent
@@ -28,7 +27,7 @@ struct MeetingCard: View {
                 }
             }
             Spacer(minLength: metrics.spacing.md)
-            Text(UpcomingWindow.countdown(to: meeting.start, now: now))
+            Text(UpcomingWindow.countdown(to: meeting.start, now: now, locale: .current))
                 .font(metrics.typography.rowTitle.weight(.medium))
                 .lineLimit(1)
                 .padding(.horizontal, metrics.spacing.md)
@@ -44,7 +43,7 @@ struct MeetingCard: View {
         .accessibilityElement(children: .combine)
         .accessibilityLabel(
             "\(meeting.title), \(subtitle), "
-                + UpcomingWindow.countdown(to: meeting.start, now: now)
+                + UpcomingWindow.countdown(to: meeting.start, now: now, locale: .current)
         )
         .accessibilityAddTraits(.isButton)
     }
@@ -74,28 +73,63 @@ extension MeetingEvent.CalendarColor {
     var nsColor: NSColor { NSColor(srgbRed: red, green: green, blue: blue, alpha: 1) }
 }
 
-/// Actions for a meeting, shared by the card and every schedule row.
+/// Actions for a meeting, shared by the card, every launcher and schedule row and the details page.
 @MainActor
 enum MeetingActionsMenu {
-    static func content(meeting: MeetingEvent, core: AppCore) -> PopoverMenuContent {
+    static func content(
+        meeting: MeetingEvent, core: AppCore, offersDetails: Bool = true
+    ) -> PopoverMenuContent {
         var items: [PopoverMenuItem] = []
         if meeting.link != nil {
             items.append(
-                PopoverMenuItem(title: "Join Meeting", systemImage: "video.fill", shortcut: "↵") {
+                PopoverMenuItem(
+                    title: String(localized: "Join Meeting"), systemImage: "video.fill", shortcut: "↵"
+                ) {
                     core.calendarCoordinator.join(meeting)
                 })
             items.append(
-                PopoverMenuItem(title: "Copy Meeting Link", systemImage: "link", shortcut: "⌘↵") {
+                PopoverMenuItem(
+                    title: String(localized: "Copy Meeting Link"), systemImage: "link", shortcut: "⌘↵"
+                ) {
                     core.calendarCoordinator.copyLink(meeting)
                 })
         }
         items.append(
             PopoverMenuItem(
-                title: "Open in Calendar", systemImage: "calendar", startsSection: true,
-                shortcut: meeting.link == nil ? "↵" : nil
+                title: String(localized: "Open in Calendar"), systemImage: "calendar", startsSection: true,
+                shortcut: meeting.link == nil ? "↵" : "⌘O"
             ) {
                 core.calendarCoordinator.openInCalendar(meeting)
             })
+        if offersDetails {
+            items.append(
+                PopoverMenuItem(
+                    title: String(localized: "Show Details"), systemImage: "info.circle", shortcut: "⌘I"
+                ) {
+                    core.calendarCoordinator.showDetails(of: meeting)
+                })
+        }
         return PopoverMenuContent(header: meeting.title, items: items)
+    }
+
+    /// ⌘↵ — false for a meeting with no link, leaving the key unhandled.
+    static func secondary(meeting: MeetingEvent, core: AppCore) -> Bool {
+        guard meeting.link != nil else { return false }
+        core.calendarCoordinator.copyLink(meeting)
+        return true
+    }
+
+    static func perform(
+        _ shortcut: PaletteShortcut, meeting: MeetingEvent, core: AppCore, offersDetails: Bool = true
+    ) -> Bool {
+        switch shortcut {
+        case .openInApp:
+            core.calendarCoordinator.openInCalendar(meeting)
+        case .showDetails where offersDetails:
+            core.calendarCoordinator.showDetails(of: meeting)
+        default:
+            return false
+        }
+        return true
     }
 }

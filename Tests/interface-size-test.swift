@@ -62,9 +62,11 @@ struct InterfaceSizeTests {
         expect(
             m.spacing.chatFollowTailSlack, Theme.Spacing.chatFollowTailSlack,
             "spacing.chatFollowTailSlack")
+        expect(m.spacing.chatLine, Theme.Spacing.chatLine, "spacing.chatLine")
 
         expect(m.radius.panel, Theme.Radius.panel, "radius.panel")
         expect(m.radius.row, Theme.Radius.row, "radius.row")
+        expect(m.radius.formField, Theme.Radius.formField, "radius.formField")
         expect(m.radius.emojiCell, Theme.Radius.emojiCell, "radius.emojiCell")
         expect(m.radius.menu, Theme.Radius.menu, "radius.menu")
         expect(m.radius.menuRow, Theme.Radius.menuRow, "radius.menuRow")
@@ -83,11 +85,15 @@ struct InterfaceSizeTests {
         expect(m.size.panelHeight, Theme.Size.panelHeight, "size.panelHeight")
         expect(m.size.headerHeight, Theme.Size.headerHeight, "size.headerHeight")
         expect(m.size.headerIconSlot, Theme.Size.headerIconSlot, "size.headerIconSlot")
+        expect(
+            m.size.searchFieldMinWidth, Theme.Size.searchFieldMinWidth, "size.searchFieldMinWidth")
         expect(m.size.headerPadding, Theme.Size.headerPadding, "size.headerPadding")
         expect(m.size.compactHeight, Theme.Size.compactHeight, "size.compactHeight")
         expect(m.size.bottomBarHeight, Theme.Size.bottomBarHeight, "size.bottomBarHeight")
+        expect(m.size.textAreaUnit, Theme.Size.textAreaUnit, "size.textAreaUnit")
         expect(m.size.barButtonHeight, Theme.Size.barButtonHeight, "size.barButtonHeight")
         expect(m.size.rowIcon, Theme.Size.rowIcon, "size.rowIcon")
+        expect(m.size.resultRowIcon, Theme.Size.resultRowIcon, "size.resultRowIcon")
         expect(m.size.colorDot, Theme.Size.colorDot, "size.colorDot")
         expect(m.size.calendarBarWidth, Theme.Size.calendarBarWidth, "size.calendarBarWidth")
         expect(m.size.calendarBarHeight, Theme.Size.calendarBarHeight, "size.calendarBarHeight")
@@ -97,6 +103,11 @@ struct InterfaceSizeTests {
         expect(m.size.menuButton, Theme.Size.menuButton, "size.menuButton")
         expect(m.size.checkbox, Theme.Size.checkbox, "size.checkbox")
         expect(m.size.menuWidth, Theme.Size.menuWidth, "size.menuWidth")
+        expect(m.size.formMenuMinimumWidth, Theme.Size.formMenuMinimumWidth, "size.formMenuMinimumWidth")
+        expect(
+            m.size.formMenuExtraRowsHeight, Theme.Size.formMenuExtraRowsHeight,
+            "size.formMenuExtraRowsHeight")
+        expect(m.size.formFieldFocusStroke, Theme.Size.formFieldFocusStroke, "size.formFieldFocusStroke")
         expect(
             m.size.clipboardFilterMenuWidth, Theme.Size.clipboardFilterMenuWidth,
             "size.clipboardFilterMenuWidth")
@@ -127,8 +138,6 @@ struct InterfaceSizeTests {
         expect(m.size.chatImageThumb, Theme.Size.chatImageThumb, "size.chatImageThumb")
         expect(m.size.chatAttachmentGlyph, Theme.Size.chatAttachmentGlyph, "size.chatAttachmentGlyph")
         expect(m.size.chatAttachmentThumb, Theme.Size.chatAttachmentThumb, "size.chatAttachmentThumb")
-        expect(
-            m.size.chatAttachmentRemove, Theme.Size.chatAttachmentRemove, "size.chatAttachmentRemove")
         expect(m.size.chatAttachmentInset, Theme.Size.chatAttachmentInset, "size.chatAttachmentInset")
         expect(m.size.quickActionPanel, Theme.Size.quickActionPanel, "size.quickActionPanel")
         expect(
@@ -169,6 +178,19 @@ struct InterfaceSizeTests {
 
         // Extensions duplicates the mechanism rather than importing it, so it is checked here too.
         expect(ExtensionFormMetrics.base.scale, 1, "the form metrics base is unscaled")
+        for size in InterfaceSize.allCases {
+            let metrics = size.metrics
+            let form = ExtensionFormMetrics(scale: metrics.scale)
+            let labelWidth = (metrics.size.panelWidth * 0.16).rounded()
+            expect(
+                form.controlWidth,
+                metrics.size.panelWidth - labelWidth * 2 - metrics.spacing.xxxl * 4
+                    - metrics.spacing.xxl * 2,
+                "extension controls match native form width at \(size)")
+            expect(form.controlHeight, metrics.size.dialogButtonHeight, "matching field height at \(size)")
+            expect(form.textInset, metrics.spacing.xl, "matching horizontal text inset at \(size)")
+            expect(form.verticalInset, metrics.spacing.md, "matching vertical text inset at \(size)")
+        }
     }
 
     // MARK: - Fonts
@@ -274,7 +296,9 @@ struct InterfaceSizeTests {
             ("spacing.emojiSectionSpacing", m.spacing.emojiSectionSpacing),
             ("spacing.chatTranscriptBottom", m.spacing.chatTranscriptBottom),
             ("spacing.chatFollowTailSlack", m.spacing.chatFollowTailSlack),
+            ("spacing.chatLine", m.spacing.chatLine),
             ("radius.panel", m.radius.panel), ("radius.row", m.radius.row),
+            ("radius.formField", m.radius.formField),
             ("radius.emojiCell", m.radius.emojiCell), ("radius.menu", m.radius.menu),
             ("radius.menuRow", m.radius.menuRow),
             ("radius.barControl", m.radius.barControl), ("radius.menuPanel", m.radius.menuPanel),
@@ -286,16 +310,22 @@ struct InterfaceSizeTests {
             ("size.panelWidth", m.size.panelWidth), ("size.panelHeight", m.size.panelHeight),
             ("size.headerHeight", m.size.headerHeight),
             ("size.headerIconSlot", m.size.headerIconSlot),
+            ("size.searchFieldMinWidth", m.size.searchFieldMinWidth),
             ("size.headerPadding", m.size.headerPadding),
             ("size.compactHeight", m.size.compactHeight),
             ("size.bottomBarHeight", m.size.bottomBarHeight),
+            ("size.textAreaUnit", m.size.textAreaUnit),
             ("size.barButtonHeight", m.size.barButtonHeight), ("size.rowIcon", m.size.rowIcon),
+            ("size.resultRowIcon", m.size.resultRowIcon),
             ("size.colorDot", m.size.colorDot),
             ("size.calendarBarWidth", m.size.calendarBarWidth),
             ("size.calendarBarHeight", m.size.calendarBarHeight),
             ("size.keyCap", m.size.keyCap), ("size.compactKeyCap", m.size.compactKeyCap),
             ("size.heroKeyCap", m.size.heroKeyCap), ("size.menuButton", m.size.menuButton),
             ("size.checkbox", m.size.checkbox), ("size.menuWidth", m.size.menuWidth),
+            ("size.formMenuMinimumWidth", m.size.formMenuMinimumWidth),
+            ("size.formMenuExtraRowsHeight", m.size.formMenuExtraRowsHeight),
+            ("size.formFieldFocusStroke", m.size.formFieldFocusStroke),
             ("size.clipboardFilterMenuWidth", m.size.clipboardFilterMenuWidth),
             ("size.fileSearchFilterMenuWidth", m.size.fileSearchFilterMenuWidth),
             ("size.emojiCategoryMenuWidth", m.size.emojiCategoryMenuWidth),
@@ -314,7 +344,6 @@ struct InterfaceSizeTests {
             ("size.chatImageThumb", m.size.chatImageThumb),
             ("size.chatAttachmentGlyph", m.size.chatAttachmentGlyph),
             ("size.chatAttachmentThumb", m.size.chatAttachmentThumb),
-            ("size.chatAttachmentRemove", m.size.chatAttachmentRemove),
             ("size.chatAttachmentInset", m.size.chatAttachmentInset),
             ("size.quickActionPanel", m.size.quickActionPanel),
             ("size.quickActionHeaderIcon", m.size.quickActionHeaderIcon),

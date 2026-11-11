@@ -31,12 +31,10 @@ struct CalculatorHistoryList: View {
         }
     }
 
-    /// Scroll target for the current selection.
     private var selectedRowID: String? {
         calcSelected ? Self.calcRowID : selectedID?.uuidString
     }
 
-    /// Whether the selection sits on flat index 0: the calc card, else the first entry.
     private var firstRowSelected: Bool {
         calc != nil ? calcSelected : selectedID != nil && selectedID == results.first?.id
     }
@@ -44,7 +42,7 @@ struct CalculatorHistoryList: View {
     /// Newest-first, so a date header is emitted whenever the bucket changes.
     private var rows: [Row] {
         var rows: [Row] = []
-        if let calc { rows = [.header("Calculator"), .calc(calc)] }
+        if let calc { rows = [.header(String(localized: "Calculator")), .calc(calc)] }
         var currentBucket: DateBucket?
         for entry in results {
             let bucket = DateBucket(for: entry.createdAt)
@@ -120,16 +118,10 @@ private struct CalcHistoryRow: View {
     }
 
     var body: some View {
-        HStack(spacing: metrics.spacing.lg) {
-            RoundedRectangle(cornerRadius: metrics.radius.thumbnail, style: .continuous)
-                .fill(Theme.Colors.controlSurface)
-                .frame(width: metrics.size.rowIcon, height: metrics.size.rowIcon)
-                .overlay(
-                    Image(systemName: "plus.forwardslash.minus")
-                        .font(.system(size: 12))
-                        .symbolRenderingMode(.hierarchical)
-                        .foregroundStyle(.secondary)
-                )
+        IconCache.observeStyle()
+        return HStack(spacing: metrics.spacing.lg) {
+            Image(nsImage: IconCache.symbolIcon(named: "plus.forwardslash.minus")).resizable()
+                .frame(width: metrics.size.resultRowIcon, height: metrics.size.resultRowIcon)
             Text(format.localizedExpression(entry.expression))
                 .font(metrics.typography.rowTitle)
                 .foregroundStyle(.secondary)

@@ -36,10 +36,32 @@ struct IconCacheTests {
     static func bitmap(_ image: NSImage) -> Data? { image.tiffRepresentation }
 
     static func semanticSymbolNames() {
-        expect(
-            SystemSymbolName.resolve("face.smiling") == "face.smiling.inverse",
-            "the swapped smiley pair is compensated in both appearances")
-        expect(SystemSymbolName.resolve("star") == "star", "other symbols stay unchanged")
+        for (isDark, appearance) in [(false, NSAppearance.Name.aqua), (true, .darkAqua)] {
+            let smile = SystemSymbolName.resolve("face.smiling", isDark: isDark)
+            let other = smile == "face.smiling" ? "face.smiling.inverse" : "face.smiling"
+            NSAppearance(named: appearance)?.performAsCurrentDrawingAppearance {
+                expect(ink(smile) < ink(other), "the smiley resolves to its outline, dark: \(isDark)")
+            }
+        }
+        expect(SystemSymbolName.resolve("star", isDark: true) == "star", "other symbols stay unchanged")
+    }
+
+    static func ink(_ name: String) -> Int {
+        let side = 32
+        guard
+            let symbol = NSImage(systemSymbolName: name, accessibilityDescription: nil),
+            let rep = NSBitmapImageRep(
+                bitmapDataPlanes: nil, pixelsWide: side, pixelsHigh: side, bitsPerSample: 8,
+                samplesPerPixel: 4, hasAlpha: true, isPlanar: false, colorSpaceName: .deviceRGB,
+                bytesPerRow: side * 4, bitsPerPixel: 32),
+            let context = NSGraphicsContext(bitmapImageRep: rep),
+            let bytes = rep.bitmapData
+        else { return .max }
+        NSGraphicsContext.saveGraphicsState()
+        NSGraphicsContext.current = context
+        symbol.draw(in: NSRect(x: 0, y: 0, width: side, height: side))
+        NSGraphicsContext.restoreGraphicsState()
+        return stride(from: 3, to: side * side * 4, by: 4).reduce(0) { $0 + Int(bytes[$1]) }
     }
 
     /// A restyle has to both drop what is cached and move the generation views key their fetch on.
@@ -123,7 +145,7 @@ struct IconCacheTests {
         IconCache.invalidateStyled()
     }
 
-    static func rendered(_ source: NSImage, size: IconSize) -> Data {
+    static func rendered(_ source: NSImage, size: IconSize, frame: NSRect? = nil) -> Data {
         autoreleasepool {
             let rep = NSBitmapImageRep(
                 bitmapDataPlanes: nil,
@@ -134,7 +156,7 @@ struct IconCacheTests {
             NSGraphicsContext.saveGraphicsState()
             NSGraphicsContext.current = NSGraphicsContext(bitmapImageRep: rep)
             NSGraphicsContext.current?.imageInterpolation = .high
-            source.draw(in: NSRect(origin: .zero, size: rep.size))
+            source.draw(in: frame ?? NSRect(origin: .zero, size: rep.size))
             NSGraphicsContext.restoreGraphicsState()
             return Data(bytes: rep.bitmapData!, count: rep.bytesPerRow * rep.pixelsHigh)
         }
@@ -163,6 +185,27 @@ struct IconCacheTests {
                         }
                     }
                 }
+            }
+        }
+    }
+
+    static func fittedAlphaThreshold() {
+        let size = IconSize(points: 48, scale: 2)
+        for alpha in 0...255 {
+            autoreleasepool {
+                let source = NSImage(size: NSSize(width: 96, height: 96), flipped: false) { _ in
+                    NSColor(deviceRed: 0.4, green: 0.6, blue: 0.8, alpha: CGFloat(alpha) / 255).setFill()
+                    NSRect(x: 24, y: 36, width: 48, height: 24).fill()
+                    return true
+                }
+                let painted: CGFloat = alpha >= 16 ? 0.5 : IconCache.appIconExtent
+                let side = size.points * 0.76 / painted
+                let inset = (size.points - side) / 2
+                let expected = rendered(
+                    source, size: size, frame: NSRect(x: inset, y: inset, width: side, height: side))
+                let (fitted, cost) = IconCache.fitted(source, to: 0.76)
+                expect(rendered(fitted, size: size) == expected, "fitted geometry at alpha \(alpha)")
+                expect(cost == 96 * 96 * 4, "fitted cache cost matches the bitmap")
             }
         }
     }
@@ -197,6 +240,7 @@ struct IconCacheTests {
         rowSizes()
         rowLifetime()
         rowRendering()
+        fittedAlphaThreshold()
         await asynchronousRows()
         semanticSymbolNames()
         tintedTiles()

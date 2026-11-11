@@ -4,7 +4,7 @@ import Foundation
 enum Fallback: Hashable, Sendable {
     /// The shipped destinations, in the order a fresh install offers them.
     enum Builtin: String, CaseIterable, Sendable {
-        case aiChat
+        case quickAI
         case searchFiles
         case runShellCommand
         case define
@@ -12,7 +12,7 @@ enum Fallback: Hashable, Sendable {
         /// Where its name and glyph come from, so a fallback row reads like the command it runs.
         var command: CommandID {
             switch self {
-            case .aiChat: return .aiChat
+            case .quickAI: return .quickAI
             case .searchFiles: return .searchFiles
             case .runShellCommand: return .runShellCommand
             case .define: return .define
@@ -43,14 +43,13 @@ enum Fallback: Hashable, Sendable {
         }
     }
 
-    /// The footer pill's verb: what ↵ does, in the destination's own words.
     var openVerb: String {
         switch self {
-        case .builtin(.aiChat): return "Ask AI Chat"
-        case .builtin(.searchFiles): return "Search Files"
-        case .builtin(.runShellCommand): return "Run Shell Command"
-        case .builtin(.define): return "Define Word"
-        case .quicklink: return "Open Quicklink"
+        case .builtin(.quickAI): return String(localized: "Ask Quick AI")
+        case .builtin(.searchFiles): return String(localized: "Search Files")
+        case .builtin(.runShellCommand): return String(localized: "Run Shell Command")
+        case .builtin(.define): return String(localized: "Define Word")
+        case .quicklink: return String(localized: "Open Quicklink")
         }
     }
 
@@ -63,7 +62,8 @@ enum Fallback: Hashable, Sendable {
 
     /// The section header. A long query is elided in the middle, so “with…” always survives.
     static func sectionTitle(query: String, limit: Int = 72) -> String {
-        guard query.count > limit else { return "Use “\(query)” with…" }
-        return "Use “\(query.prefix(limit / 2))…\(query.suffix(limit - limit / 2 - 1))” with…"
+        guard query.count > limit else { return String(localized: "Use “\(query)” with…") }
+        let elided = "\(query.prefix(limit / 2))…\(query.suffix(limit - limit / 2 - 1))"
+        return String(localized: "Use “\(elided)” with…")
     }
 }

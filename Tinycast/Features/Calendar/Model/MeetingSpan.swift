@@ -1,42 +1,34 @@
 import Foundation
 
-/// How far ahead Tinycast reads, so the query's length and every sentence naming it agree.
-enum MeetingSpan: Sendable {
-    case today
-    case todayAndTomorrow
+/// The days Tinycast reads, today included, so the query and every sentence naming it agree.
+enum MeetingSpan: Int, CaseIterable, Identifiable, Sendable {
+    case today = 1
+    case todayAndTomorrow = 2
+    case nextSevenDays = 7
 
-    init(includesTomorrow: Bool) {
-        self = includesTomorrow ? .todayAndTomorrow : .today
+    var id: Int { rawValue }
+
+    var title: String {
+        switch self {
+        case .today: return String(localized: "Today")
+        case .todayAndTomorrow: return String(localized: "Today and Tomorrow")
+        case .nextSevenDays: return String(localized: "Next 7 Days")
+        }
     }
 
     /// Midnight today through midnight at the end of the span, in the calendar's own zone.
     func interval(from now: Date, calendar: Calendar) -> DateInterval? {
         guard let start = calendar.dateInterval(of: .day, for: now)?.start,
-            let end = calendar.date(byAdding: .day, value: days, to: start)
+            let end = calendar.date(byAdding: .day, value: rawValue, to: start)
         else { return nil }
         return DateInterval(start: start, end: end)
     }
 
-    /// "today's and tomorrow's", for a sentence naming the events that are read.
-    var possessivePhrase: String {
+    var nothingScheduledMessage: String {
         switch self {
-        case .today: return "today's"
-        case .todayAndTomorrow: return "today's and tomorrow's"
-        }
-    }
-
-    /// "today or tomorrow", for a sentence where "and" would read wrong.
-    var orPhrase: String {
-        switch self {
-        case .today: return "today"
-        case .todayAndTomorrow: return "today or tomorrow"
-        }
-    }
-
-    private var days: Int {
-        switch self {
-        case .today: return 1
-        case .todayAndTomorrow: return 2
+        case .today: return String(localized: "Nothing scheduled today")
+        case .todayAndTomorrow: return String(localized: "Nothing scheduled today or tomorrow")
+        case .nextSevenDays: return String(localized: "Nothing scheduled in the next 7 days")
         }
     }
 }

@@ -12,6 +12,9 @@ enum InstalledAIKind: String, CaseIterable, Codable, Identifiable, Sendable {
 
     var id: String { rawValue }
 
+    /// OpenCode's JSON stream has no closing line, so a clean exit is its finish.
+    var finishesAtExit: Bool { self == .openCode }
+
     var title: String {
         switch self {
         case .codex: return "Codex"
@@ -37,7 +40,7 @@ enum InstalledAIKind: String, CaseIterable, Codable, Identifiable, Sendable {
         case .codex: return URL(string: "https://developers.openai.com/codex/cli")!
         case .claude: return URL(string: "https://code.claude.com/docs/en/setup")!
         case .grok: return URL(string: "https://x.ai/cli")!
-        case .openCode: return URL(string: "https://opencode.ai/docs")!
+        case .openCode: return URL(string: "https://opencode.ai/v2/docs")!
         case .cursor: return URL(string: "https://cursor.com/docs/cli/overview")!
         }
     }
@@ -61,11 +64,14 @@ enum InstalledAIKind: String, CaseIterable, Codable, Identifiable, Sendable {
         }
     }
 
-    /// Cursor's CLI has no empty-MCP-config flag, so the person enabling it has to be told.
-    var isolationCaveat: String? {
+    /// What the Providers row says: Cursor keeps the reader's MCP; a managed policy owns Claude's.
+    func isolationCaveat(hasManagedMCPPolicy: Bool) -> String? {
         switch self {
-        case .cursor: return "Ask mode · your Cursor MCP servers still apply"
-        case .codex, .claude, .grok, .openCode: return nil
+        case .cursor: return String(localized: "Ask mode · your Cursor MCP servers still apply")
+        case .claude:
+            return hasManagedMCPPolicy
+                ? String(localized: "Claude’s MCP configuration is managed by your organization.") : nil
+        case .codex, .grok, .openCode: return nil
         }
     }
 
@@ -98,11 +104,18 @@ struct InstalledAIModel: Equatable, Identifiable, Sendable {
     let id: String
     let name: String
     let efforts: [ChatGPTSubscription.Effort]
+    let acceptsImages: Bool
+    let supportsTools: Bool
 
-    init(id: String, name: String, efforts: [ChatGPTSubscription.Effort] = []) {
+    init(
+        id: String, name: String, efforts: [ChatGPTSubscription.Effort] = [],
+        acceptsImages: Bool = false, supportsTools: Bool = false
+    ) {
         self.id = id
         self.name = name
         self.efforts = efforts
+        self.acceptsImages = acceptsImages
+        self.supportsTools = supportsTools
     }
 
     func resolvedEffort(_ preferred: String?) -> String? {
@@ -112,14 +125,94 @@ struct InstalledAIModel: Equatable, Identifiable, Sendable {
         return efforts.first?.id
     }
 
-    static let claude: [InstalledAIModel] = [
-        InstalledAIModel(id: "sonnet", name: "Claude Sonnet", efforts: claudeEfforts),
-        InstalledAIModel(id: "opus", name: "Claude Opus", efforts: claudeEfforts),
-        InstalledAIModel(id: "haiku", name: "Claude Haiku")
-    ]
+    /// What Claude's `initialize` control request asks for; the answer is its own `/model` list.
+    static let claudeInitializeRequest =
+        #"{"type":"control_request","request_id":"tinycast-models","request":{"subtype":"initialize"}}"#
+        + "\n"
 
-    private static let claudeEfforts = ["low", "medium", "high", "xhigh", "max"].map {
-        ChatGPTSubscription.Effort(id: $0, detail: nil)
+    static let claudeTitleRequestID = "tinycast-title"
+
+    /// Claude Code's own session namer, asked without persisting anything to its history.
+    static func claudeTitleRequest(_ description: String) -> String? {
+        let request: [String: Any] = [
+            "type": "control_request", "request_id": claudeTitleRequestID,
+            "request": [
+                "subtype": "generate_session_title", "description": description,
+                "persist": false
+            ]
+        ]
+        guard let data = try? JSONSerialization.data(withJSONObject: request),
+            let line = String(bytes: data, encoding: .utf8)
+        else { return nil }
+        return line + "\n"
+    }
+
+    static func claudeTitle(_ output: String) -> String? {
+        for line in output.split(whereSeparator: \.isNewline) {
+            guard let object = try? JSONSerialization.jsonObject(with: Data(line.utf8)) as? [String: Any],
+                let response = object["response"] as? [String: Any],
+                response["request_id"] as? String == claudeTitleRequestID,
+                let payload = response["response"] as? [String: Any],
+                let title = payload["title"] as? String
+            else { continue }
+            return title
+        }
+        return nil
+    }
+
+    /// The CLI's own picker, one row per resolved model: `default` only restates another entry.
+    static func claudeCatalog(_ output: String) -> [InstalledAIModel] {
+        for line in output.split(whereSeparator: \.isNewline) {
+            guard let object = try? JSONSerialization.jsonObject(with: Data(line.utf8)) as? [String: Any],
+                object["type"] as? String == "control_response",
+                let response = object["response"] as? [String: Any],
+                let payload = response["response"] as? [String: Any],
+                let entries = payload["models"] as? [[String: Any]]
+            else { continue }
+            var models: [InstalledAIModel] = []
+            var resolved = Set<String>()
+            for entry in entries {
+                guard let id = entry["value"] as? String, !id.isEmpty, id != "default" else {
+                    continue
+                }
+                let target = entry["resolvedModel"] as? String ?? id
+                guard resolved.insert(target).inserted else { continue }
+                models.append(
+                    InstalledAIModel(
+                        id: id, name: claudeName(entry, fallback: id),
+                        efforts: (entry["supportedEffortLevels"] as? [String] ?? []).map {
+                            ChatGPTSubscription.Effort(id: $0, detail: nil)
+                        }))
+            }
+            return models
+        }
+        return []
+    }
+
+    /// The same answer that lists the models names the account; nothing more is asked for it.
+    static func claudeAccount(_ output: String) -> InstalledAIAccount? {
+        for line in output.split(whereSeparator: \.isNewline) {
+            guard let object = try? JSONSerialization.jsonObject(with: Data(line.utf8)) as? [String: Any],
+                object["type"] as? String == "control_response",
+                let response = object["response"] as? [String: Any],
+                let payload = response["response"] as? [String: Any],
+                let account = payload["account"] as? [String: Any]
+            else { continue }
+            let email = account["email"] as? String
+            let plan = account["subscriptionType"] as? String
+            guard email != nil || plan != nil else { return nil }
+            return InstalledAIAccount(email: email, plan: plan)
+        }
+        return nil
+    }
+
+    /// An older CLI leads `description` with the version, "Opus 5.5 · Best…"; a newer one names it.
+    private static func claudeName(_ entry: [String: Any], fallback: String) -> String {
+        let parts = (entry["description"] as? String ?? "").components(separatedBy: " · ")
+        let versioned = parts.count > 1 ? parts[0].trimmingCharacters(in: .whitespaces) : ""
+        let displayed = entry["displayName"] as? String ?? ""
+        let name = [versioned, displayed].first { !$0.isEmpty } ?? fallback
+        return name.hasPrefix("Claude") ? name : "Claude " + name
     }
 
     /// `/effort` advertises these four; a model only honours the ones it supports.
@@ -145,37 +238,36 @@ struct InstalledAIModel: Equatable, Identifiable, Sendable {
         return models
     }
 
-    static func openCodeCatalog(_ output: String) -> [InstalledAIModel] {
+    /// `grok models` exits 0 and still prints the catalog when the CLI is signed out.
+    static func grokSignedIn(_ output: String) -> Bool {
         let clean = output.replacingOccurrences(
-            of: "\u{001B}\\[[0-9;]*[A-Za-z]", with: "", options: .regularExpression)
-        var entries: [(String, [String])] = []
-        var id: String?
-        var objectLines: [String] = []
+            of: "\u{001B}\\[[0-9;]*[A-Za-z]", with: "", options: .regularExpression
+        )
+        .lowercased()
+        return !clean.contains("not authenticated") && !clean.contains("not signed in")
+    }
 
-        func appendEntry() {
-            guard let id else { return }
-            let data = Data(objectLines.joined(separator: "\n").utf8)
-            let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
-            let variants = object?["variants"] as? [String: Any] ?? [:]
-            entries.append((id, variants.keys.sorted(by: effortOrder)))
-        }
-
-        for raw in clean.components(separatedBy: .newlines) {
-            let line = raw.trimmingCharacters(in: .whitespacesAndNewlines)
-            if raw == line, line.contains("/"), !line.hasPrefix("{") {
-                appendEntry()
-                id = line
-                objectLines = []
-            } else if id != nil {
-                objectLines.append(raw)
-            }
-        }
-        appendEntry()
-        return entries.map { id, efforts in
-            InstalledAIModel(
+    /// The server's `model.list` answer: only models whose provider OpenCode can already reach.
+    static func openCodeCatalog(_ output: String) -> [InstalledAIModel] {
+        guard let object = try? JSONSerialization.jsonObject(with: Data(output.utf8)) as? [String: Any],
+            let entries = object["data"] as? [[String: Any]]
+        else { return [] }
+        let models = entries.compactMap { entry -> InstalledAIModel? in
+            guard let provider = entry["providerID"] as? String, let model = entry["id"] as? String
+            else { return nil }
+            let id = provider + "/" + model
+            let variants = (entry["variants"] as? [[String: Any]] ?? []).compactMap { $0["id"] as? String }
+            let capabilities = entry["capabilities"] as? [String: Any] ?? [:]
+            let input = capabilities["input"] as? [String] ?? []
+            return InstalledAIModel(
                 id: id, name: id,
-                efforts: efforts.map { ChatGPTSubscription.Effort(id: $0, detail: nil) })
+                efforts: variants.sorted(by: effortOrder).map {
+                    ChatGPTSubscription.Effort(id: $0, detail: nil)
+                },
+                acceptsImages: input.contains("image"),
+                supportsTools: capabilities["tools"] as? Bool == true)
         }
+        return models.sorted { $0.id.localizedStandardCompare($1.id) == .orderedAscending }
     }
 
     /// `agent --list-models` lines look like `composer-2.5 - Composer 2.5`.
@@ -204,6 +296,21 @@ struct InstalledAIModel: Equatable, Identifiable, Sendable {
     }
 }
 
+/// Who a tool is signed in as, when it says; shown so the reader knows which account is billed.
+struct InstalledAIAccount: Equatable, Sendable {
+    let email: String?
+    let plan: String?
+
+    /// The CLI says "max" in one answer and "Claude Max" in another; the row adds the tool's name.
+    var planTitle: String? {
+        guard var title = plan?.trimmingCharacters(in: .whitespaces), !title.isEmpty else {
+            return nil
+        }
+        if title.lowercased().hasPrefix("claude ") { title = String(title.dropFirst(7)) }
+        return title.prefix(1).uppercased() + title.dropFirst()
+    }
+}
+
 struct InstalledAIStatus: Equatable, Sendable {
     enum Phase: Equatable, Sendable {
         case idle
@@ -218,6 +325,7 @@ struct InstalledAIStatus: Equatable, Sendable {
     var version: String?
     var executable: URL?
     var models: [InstalledAIModel] = []
+    var account: InstalledAIAccount?
 
     var isReady: Bool { phase == .ready && executable != nil && !models.isEmpty }
 }
