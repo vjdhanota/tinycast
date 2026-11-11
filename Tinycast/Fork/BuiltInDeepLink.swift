@@ -10,6 +10,7 @@ enum BuiltInDeepLink: Equatable, Sendable {
 
     case action(HotKeyAction)
     case named(NamedCatalog, String)
+    case focusApp(bundleID: String)
 
     static func parse(_ url: URL) -> BuiltInDeepLink? {
         switch url.scheme?.lowercased() {
@@ -76,6 +77,8 @@ enum BuiltInDeepLink: Equatable, Sendable {
             return item(target, in: .quicklink) { .quicklink(id: $0) }
         case "window-size":
             return item(target, in: .windowSize) { .customWindowSize(id: $0) }
+        case "focus-app":
+            return .focusApp(bundleID: target)
         default:
             return nil
         }

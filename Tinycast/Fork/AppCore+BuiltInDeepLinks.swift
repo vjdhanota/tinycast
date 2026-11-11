@@ -1,4 +1,4 @@
-import Foundation
+import AppKit
 
 extension AppCore {
     func handleBuiltInDeepLink(_ url: URL) -> Bool {
@@ -12,6 +12,8 @@ extension AppCore {
                 return true
             }
             hotKeys.perform(action)
+        case .focusApp(let bundleID):
+            focusApp(bundleID: bundleID)
         }
         return true
     }
@@ -28,5 +30,19 @@ extension AppCore {
         case .windowSize:
             return customWindowSizes.sizes.first { matches($0.name) }.map { .customWindowSize(id: $0.id) }
         }
+    }
+
+    private func focusApp(bundleID: String) {
+        guard let app = NSRunningApplication.runningApplications(withBundleIdentifier: bundleID).first
+        else {
+            showMessage("\(bundleID) isn't running", tone: .danger)
+            return
+        }
+        guard Permissions.ensureAccessibility() else { return }
+        app.unhide()
+        AXUIElementSetAttributeValue(
+            AXUIElementCreateApplication(app.processIdentifier), kAXFrontmostAttribute as CFString,
+            kCFBooleanTrue)
+        app.activate()
     }
 }

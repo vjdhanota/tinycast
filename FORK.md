@@ -14,6 +14,7 @@ Leader Key can trigger them. Branch `fork` carries the patch; `main` mirrors ups
 | `tinycast://custom-command/<name-or-uuid>` | A custom command |
 | `tinycast://quicklink/<name-or-uuid>` | A quicklink |
 | `tinycast://window-size/<name-or-uuid>` | A custom window size, e.g. `window-size/top-center-two-thirds` |
+| `tinycast://focus-app/<bundle-id>` | Brings a running app to the front through Accessibility, e.g. `focus-app/com.mitchellh.ghostty`. macOS ignores activation requests from background apps, so extensions use this instead of `open -a` |
 
 Names match case-insensitively with punctuation and spaces as hyphens. Each link runs exactly what the
 action's global shortcut runs, so the feature must be switched on in Settings.

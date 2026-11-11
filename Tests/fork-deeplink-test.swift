@@ -35,6 +35,11 @@ struct ForkDeepLinkTest {
             "a system action",
             parse("tinycast://system-action/sleep") == .action(.systemAction(id: .sleep)))
 
+        check(
+            "an app to bring forward by bundle id",
+            parse("tinycast://focus-app/com.mitchellh.ghostty") == .focusApp(bundleID: "com.mitchellh.ghostty"))
+        check("an app link without a bundle id", parse("tinycast://focus-app") == nil)
+
         let id = UUID(uuidString: "97A1DDFA-76F3-4872-A672-25D5F35B7882")!
         check(
             "a custom Quick Action by id",
